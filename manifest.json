@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "The Unclicked（余路）",
+  "description": "A local-first prototype for revisiting seriously considered search paths.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "114",
+  "permissions": [
+    "sidePanel"
+  ],
+  "background": {
+    "service_worker": "background/serviceWorker.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
+  },
+  "action": {
+    "default_title": "Open The Unclicked"
+  }
+}

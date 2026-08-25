@@ -1,0 +1,11 @@
+{
+  "name": "the-unclicked-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "node --check shared/messages.js && node --check background/serviceWorker.js && node --check sidepanel/app.js && node --check demo/app.js",
+    "test": "node --test tests/messages.test.js",
+    "build": "node scripts/validate-build.js"
+  }
+}

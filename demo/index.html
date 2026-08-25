@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>The Unclicked 本地 Demo</title>
+  </head>
+  <body>
+    <main>
+      <h1>本地 Demo</h1>
+      <p>这是扩展内部页面，不访问真实站点，也不需要 host permission。</p>
+
+      <section
+        data-demo-search-page
+        data-demo-query="robot navigation"
+        data-demo-source="local-demo-search"
+        data-demo-session-id="demo-session-001"
+        data-demo-timestamp="1787587200000"
+        data-demo-keywords="robotics,navigation,spatial reasoning"
+        aria-labelledby="demo-results-heading"
+      >
+        <h2 id="demo-results-heading">搜索结果：robot navigation</h2>
+        <div data-demo-results>
+          <article data-demo-result data-candidate-id="demo-candidate-001">
+            <h3 data-demo-title>Human Cognitive Map and Spatial Representation</h3>
+            <a
+              data-demo-link
+              href="https://knowledge.example/papers/cognitive-map?id=101&utm_source=local-demo#abstract"
+            >打开结果</a>
+          </article>
+
+          <article data-demo-result data-candidate-id="demo-candidate-002">
+            <h3 data-demo-title>Planning with Learned World Models</h3>
+            <a
+              data-demo-link
+              href="https://knowledge.example/papers/world-models?lang=en&id=202"
+            >打开结果</a>
+          </article>
+        </div>
+      </section>
+
+      <button id="ping-button" type="button">Ping Service Worker</button>
+      <p id="status" role="status" aria-live="polite">尚未发送 PING。</p>
+      <pre id="response">等待响应</pre>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>The Unclicked（余路）</title>
+  </head>
+  <body>
+    <main>
+      <h1>The Unclicked（余路）</h1>
+      <p>Manifest V3 最小骨架。当前仅验证 Side Panel 与后台消息连接。</p>
+
+      <button id="ping-button" type="button">Ping Service Worker</button>
+      <p id="status" role="status" aria-live="polite">尚未发送 PING。</p>
+      <pre id="response">等待响应</pre>
+
+      <p>
+        <a href="../demo/index.html" target="_blank" rel="noreferrer">打开本地 Demo</a>
+      </p>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
