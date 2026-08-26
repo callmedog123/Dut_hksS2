@@ -16,16 +16,17 @@
 
     <section class="session" aria-labelledby="session-title">
       <h2 class="section-title" id="session-title">本次会话</h2>
+      <!-- 主题与数字由 app.js 根据演示数据填入 -->
       <p class="session-topic">
-        当前主题：<strong id="session-subject">机器人导航</strong>
+        当前主题：<strong id="session-subject">—</strong>
       </p>
       <ul class="session-stats">
         <li>
-          <span class="stat-value" id="chosen-count">2</span>
+          <span class="stat-value" id="chosen-count">0</span>
           <span class="stat-label">已选择</span>
         </li>
         <li>
-          <span class="stat-value" id="missed-count">1</span>
+          <span class="stat-value" id="missed-count">0</span>
           <span class="stat-label">考虑过未选择</span>
         </li>
       </ul>
@@ -35,65 +36,18 @@
       等待操作
     </p>
 
-    <main class="card-list" id="card-list">
-      <!-- 未选择路径 -->
-      <article class="card" data-card-type="missed" data-counted="true">
-        <p class="card-kind">未选择路径</p>
-        <h3 class="card-title">
-          Human Cognitive Map and Spatial Representation
-        </h3>
-        <p class="card-source">来源：Local Demo Search</p>
-
-        <div class="card-reason">
-          <p class="reason-label">为什么被记录</p>
-          <ul class="reason-list">
-            <li>页面停留约 4.7 秒</li>
-            <li>曾回看 2 次</li>
-            <li>最终没有点击</li>
-          </ul>
-        </div>
-
-        <p class="card-state" data-role="state">状态：待处理</p>
-
-        <div class="card-actions">
-          <button type="button" class="btn btn-primary" data-action="open">打开</button>
-          <button type="button" class="btn" data-action="ignore">忽略</button>
-          <button type="button" class="btn btn-quiet" data-action="delete">删除</button>
-        </div>
-      </article>
-
-      <!-- 情境化重逢 -->
-      <article class="card card-reunion" data-card-type="reunion" data-counted="false">
-        <p class="card-kind">情境化重逢</p>
-        <h3 class="card-title">你曾经差一点走向这里</h3>
-        <p class="card-source">
-          Human Cognitive Map and Spatial Representation
-        </p>
-
-        <div class="card-reason">
-          <p class="reason-label">为什么现在出现</p>
-          <ul class="reason-list">
-            <li>当前主题与你过去未选择的内容相关</li>
-            <li>它曾进入你的考虑范围，但当时没有打开</li>
-          </ul>
-        </div>
-
-        <p class="card-state" data-role="state">状态：待处理</p>
-
-        <div class="card-actions">
-          <button type="button" class="btn btn-primary" data-action="open">打开</button>
-          <button type="button" class="btn" data-action="ignore">忽略</button>
-          <button type="button" class="btn btn-quiet" data-action="delete">删除</button>
-        </div>
-      </article>
-    </main>
+    <!-- 卡片全部由 app.js 中的演示数据生成，这里保持为空容器 -->
+    <main class="card-list" id="card-list"></main>
 
     <p class="empty" id="empty-state" hidden>
       本次会话没有需要处理的内容。
     </p>
 
     <footer class="panel-footer">
-      数据保存在本地，可随时暂停记录或清空。
+      <p class="footer-note">数据保存在本地，可随时重置。</p>
+      <button type="button" class="btn btn-quiet" id="reset-demo">
+        重置演示数据
+      </button>
     </footer>
   </div>
 

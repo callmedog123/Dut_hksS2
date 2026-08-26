@@ -250,3 +250,13 @@ body {
   color: var(--text-soft);
   font-size: 12px;
 }
+
+.footer-note {
+  margin: 0 0 8px;
+}
+
+/* 页脚按钮不需要撑满整行 */
+.panel-footer .btn {
+  flex: none;
+  width: 100%;
+}
