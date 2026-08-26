@@ -4,7 +4,10 @@ import test from "node:test";
 import { createSessionManager } from "../../background/sessionManager.js";
 import {
   createCandidateChosenMessage,
-  createReencounterQueryMessage
+  createCandidatesDiscoveredMessage,
+  createReencounterQueryMessage,
+  createSessionFinalizeMessage,
+  createSignalsUpdatedMessage
 } from "../../shared/messages.js";
 import { createIndexedDbStorageAdapter } from "../../storage/indexedDbStorageAdapter.js";
 import { createRepository } from "../../storage/repository.js";
@@ -21,14 +24,15 @@ function createContext(timestamp = 100) {
   };
 }
 
-function createCandidate() {
+function createCandidate(overrides = {}) {
   return {
     id: "candidate-1",
     url: "https://example.com/result",
     title: "Considered result",
     source: "local-demo",
     rank: 1,
-    sessionId: "session-1"
+    sessionId: "session-1",
+    ...overrides
   };
 }
 
@@ -126,6 +130,238 @@ function dispatchAsync(listener, message) {
     assert.equal(keepAlive, true);
   });
 }
+
+test("CANDIDATES_DISCOVERED merges persisted Sessions after Worker restart", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+
+  try {
+    const firstWorker = await loadServiceWorker("discovery-first");
+    const firstResponse = await dispatchAsync(
+      firstWorker,
+      createCandidatesDiscoveredMessage(
+        "session-1",
+        createContext(),
+        [createCandidate()],
+        200,
+        "request-discovery-first"
+      )
+    );
+    assert.deepEqual(firstResponse.data, {
+      sessionId: "session-1",
+      acceptedCandidateIds: ["candidate-1"],
+      totalCandidateCount: 1,
+      updatedAt: 200
+    });
+
+    const repository = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    const sessionWithSignals = await repository.getSession("session-1");
+    sessionWithSignals.candidates[0].signals.visibleMs = 777;
+    sessionWithSignals.candidates[0].signals.clicked = true;
+    sessionWithSignals.updatedAt = 250;
+    await repository.saveSession(sessionWithSignals);
+
+    const restartedWorker = await loadServiceWorker("discovery-restarted");
+    const secondCandidate = createCandidate({
+      id: "candidate-2",
+      url: "https://example.com/result-2",
+      title: "Second result",
+      rank: 2
+    });
+    const restartedResponse = await dispatchAsync(
+      restartedWorker,
+      createCandidatesDiscoveredMessage(
+        "session-1",
+        createContext(),
+        [createCandidate(), secondCandidate],
+        300,
+        "request-discovery-restarted"
+      )
+    );
+    assert.deepEqual(restartedResponse.data, {
+      sessionId: "session-1",
+      acceptedCandidateIds: ["candidate-2"],
+      totalCandidateCount: 2,
+      updatedAt: 300
+    });
+
+    const restartedRepository = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    const persisted = await restartedRepository.getSession("session-1");
+    assert.equal(persisted.candidates.length, 2);
+    assert.deepEqual(persisted.candidates[0].signals, {
+      candidateId: "candidate-1",
+      sessionId: "session-1",
+      visibleMs: 777,
+      hoverMs: 0,
+      hoverCount: 0,
+      returnCount: 0,
+      clicked: true
+    });
+    assert.deepEqual(persisted.candidates[1].signals, {
+      candidateId: "candidate-2",
+      sessionId: "session-1",
+      visibleMs: 0,
+      hoverMs: 0,
+      hoverCount: 0,
+      returnCount: 0,
+      clicked: false
+    });
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
+test("SIGNALS_UPDATED continues fieldwise merging after Worker restart", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+
+  try {
+    const firstWorker = await loadServiceWorker("signals-first");
+    await dispatchAsync(
+      firstWorker,
+      createCandidatesDiscoveredMessage(
+        "session-1",
+        createContext(),
+        [createCandidate()],
+        200,
+        "request-signals-discovery"
+      )
+    );
+    const firstResponse = await dispatchAsync(
+      firstWorker,
+      createSignalsUpdatedMessage(
+        {
+          candidateId: "candidate-1",
+          sessionId: "session-1",
+          visibleMs: 1_000,
+          hoverMs: 200,
+          hoverCount: 2,
+          returnCount: 1,
+          clicked: true
+        },
+        300,
+        "request-signals-first"
+      )
+    );
+    assert.deepEqual(firstResponse.data, {
+      sessionId: "session-1",
+      candidateId: "candidate-1",
+      updatedAt: 300,
+      changed: true
+    });
+
+    const restartedWorker = await loadServiceWorker("signals-restarted");
+    const restartedResponse = await dispatchAsync(
+      restartedWorker,
+      createSignalsUpdatedMessage(
+        {
+          candidateId: "candidate-1",
+          sessionId: "session-1",
+          visibleMs: 500,
+          hoverMs: 500,
+          hoverCount: 1,
+          returnCount: 3,
+          clicked: false
+        },
+        250,
+        "request-signals-restarted"
+      )
+    );
+    assert.equal(restartedResponse.requestId, "request-signals-restarted");
+    assert.deepEqual(restartedResponse.data, {
+      sessionId: "session-1",
+      candidateId: "candidate-1",
+      updatedAt: 300,
+      changed: true
+    });
+
+    const restartedRepository = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    const persisted = await restartedRepository.getSession("session-1");
+    assert.equal(persisted.updatedAt, 300);
+    assert.deepEqual(persisted.candidates[0].signals, {
+      candidateId: "candidate-1",
+      sessionId: "session-1",
+      visibleMs: 1_000,
+      hoverMs: 500,
+      hoverCount: 2,
+      returnCount: 3,
+      clicked: true
+    });
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
+test("SESSION_FINALIZE recovers the first durable result after Worker restart", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+
+  try {
+    const repository = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    await repository.saveSession(createSession());
+
+    const firstWorker = await loadServiceWorker("finalize-first");
+    const firstResponse = await dispatchAsync(
+      firstWorker,
+      createSessionFinalizeMessage(
+        "session-1",
+        500,
+        "request-finalize-first"
+      )
+    );
+    assert.equal(firstResponse.requestId, "request-finalize-first");
+    assert.equal(firstResponse.ok, true);
+    assert.equal(firstResponse.data.alreadyFinalized, false);
+    assert.equal(firstResponse.data.finalizedAt, 500);
+    assert.deepEqual(firstResponse.data.chosen, []);
+    assert.equal(firstResponse.data.missedPaths.length, 1);
+
+    const restartedWorker = await loadServiceWorker("finalize-restarted");
+    const restartedResponse = await dispatchAsync(
+      restartedWorker,
+      createSessionFinalizeMessage(
+        "session-1",
+        900,
+        "request-finalize-restarted"
+      )
+    );
+    assert.equal(restartedResponse.requestId, "request-finalize-restarted");
+    assert.equal(restartedResponse.ok, true);
+    assert.equal(restartedResponse.data.alreadyFinalized, true);
+    assert.equal(restartedResponse.data.finalizedAt, 500);
+    assert.deepEqual(
+      restartedResponse.data.missedPaths,
+      firstResponse.data.missedPaths
+    );
+
+    const restartedRepository = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    assert.equal((await restartedRepository.listMissedPaths()).length, 1);
+    assert.deepEqual(
+      await restartedRepository.getSessionFinalization("session-1"),
+      {
+        sessionId: "session-1",
+        finalizedAt: 500,
+        chosenIds: [],
+        missedPathIds: ["session-1:candidate-1"]
+      }
+    );
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
 
 test("CANDIDATE_CHOSEN persists aggregates and excludes Missed after Worker restart", async () => {
   const indexedDB = createFakeIndexedDB();

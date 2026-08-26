@@ -4,13 +4,61 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>The Unclicked 本地 Demo</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 0 auto;
+        max-width: 880px;
+        padding: 24px;
+      }
+      [data-demo-results] {
+        display: grid;
+        gap: 12px;
+        margin-block: 16px;
+      }
+      [data-demo-result] {
+        border: 1px solid #d8dbe5;
+        border-radius: 12px;
+        padding: 16px;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-block: 20px;
+      }
+      button {
+        cursor: pointer;
+        padding: 8px 14px;
+      }
+      button:disabled {
+        cursor: wait;
+      }
+      .status-card {
+        background: #f5f6fa;
+        border-radius: 12px;
+        padding: 14px;
+      }
+      pre {
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+      }
+    </style>
   </head>
   <body>
     <main>
       <h1>本地 Demo</h1>
       <p>这是扩展内部页面，不访问真实站点，也不需要 host permission。</p>
+      <p>
+        建议先用普通、Ctrl/Cmd 或中键打开第一条结果，再点击“推进场景”，最后结束会话。
+        推进按钮会显式模拟 12 秒考虑过程，不需要真实等待。
+      </p>
 
       <section
+        id="demo-search-page"
         data-demo-search-page
         data-demo-query="robot navigation"
         data-demo-source="local-demo-search"
@@ -20,12 +68,14 @@
         aria-labelledby="demo-results-heading"
       >
         <h2 id="demo-results-heading">搜索结果：robot navigation</h2>
-        <div data-demo-results>
+        <div id="demo-results" data-demo-results>
           <article data-demo-result data-candidate-id="demo-candidate-001">
             <h3 data-demo-title>Human Cognitive Map and Spatial Representation</h3>
             <a
               data-demo-link
               href="https://knowledge.example/papers/cognitive-map?id=101&utm_source=local-demo#abstract"
+              target="_blank"
+              rel="noopener noreferrer"
             >打开结果</a>
           </article>
 
@@ -34,14 +84,48 @@
             <a
               data-demo-link
               href="https://knowledge.example/papers/world-models?lang=en&id=202"
+              target="_blank"
+              rel="noopener noreferrer"
             >打开结果</a>
           </article>
         </div>
       </section>
 
-      <button id="ping-button" type="button">Ping Service Worker</button>
-      <p id="status" role="status" aria-live="polite">尚未发送 PING。</p>
-      <pre id="response">等待响应</pre>
+      <template id="dynamic-candidate-template">
+        <article data-demo-result data-candidate-id="demo-candidate-003">
+          <h3 data-demo-title>Low-signal Dynamic Result</h3>
+          <a
+            data-demo-link
+            href="https://knowledge.example/papers/dynamic-low-signal?id=303"
+            target="_blank"
+            rel="noopener noreferrer"
+          >打开动态结果</a>
+        </article>
+      </template>
+
+      <div class="controls" aria-label="Demo 场景控制">
+        <button id="advance-scenario-button" type="button" disabled>
+          推进场景（模拟 12 秒）
+        </button>
+        <button id="finalize-session-button" type="button" disabled>
+          结束会话
+        </button>
+        <button id="ping-button" type="button">诊断 Service Worker</button>
+      </div>
+
+      <section class="status-card" aria-labelledby="runtime-heading">
+        <h2 id="runtime-heading">Runtime 状态</h2>
+        <p id="runtime-status" role="status" aria-live="polite" data-state="starting">
+          正在启动 Demo Runtime……
+        </p>
+        <pre id="runtime-response">等待端到端结果</pre>
+      </section>
+
+      <section class="status-card" aria-labelledby="ping-heading">
+        <h2 id="ping-heading">Service Worker 诊断</h2>
+        <p id="ping-status" role="status" aria-live="polite">尚未发送 PING。</p>
+        <pre id="ping-response">等待响应</pre>
+      </section>
     </main>
 
     <script type="module" src="./app.js"></script>

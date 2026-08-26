@@ -3,13 +3,21 @@ import test from "node:test";
 
 import { createMessageRouter } from "../../background/messageRouter.js";
 import { ReencounterQueryError } from "../../background/reencounterQuery.js";
+import { createSessionFinalizeUseCase } from "../../background/sessionFinalize.js";
+import { createSessionManager } from "../../background/sessionManager.js";
 import {
   RESPONSE_ERROR_CODES,
   SCHEMA_VERSION,
+  createCandidatesDiscoveredMessage,
   createMissedPathsQueryMessage,
   createReencounterQueryMessage,
+  createSessionFinalizeMessage,
+  createSignalsUpdatedMessage,
+  isCandidatesDiscoveredResponse,
   isMissedPathsQueryResponse,
-  isReencounterQueryResponse
+  isReencounterQueryResponse,
+  isSessionFinalizeResponse,
+  isSignalsUpdatedResponse
 } from "../../shared/messages.js";
 import { createRepository } from "../../storage/repository.js";
 import { createTransactionalMemoryStorageAdapter } from "../storage/fixtures/memoryStorageAdapter.js";
@@ -57,6 +65,569 @@ function createCurrentContext() {
     keywords: ["robot", "navigation"]
   };
 }
+
+function createDiscoveryContext(timestamp = 100) {
+  return {
+    query: "robot navigation",
+    source: "local-demo",
+    timestamp,
+    keywords: ["robot", "navigation"]
+  };
+}
+
+function createDiscoveryCandidate(overrides = {}) {
+  return {
+    id: "candidate-1",
+    url: "https://example.com/result",
+    title: "Example result",
+    source: "local-demo",
+    rank: 1,
+    sessionId: "session-1",
+    ...overrides
+  };
+}
+
+function createUpdateSignals(overrides = {}) {
+  return {
+    candidateId: "candidate-1",
+    sessionId: "session-1",
+    visibleMs: 1_000,
+    hoverMs: 200,
+    hoverCount: 2,
+    returnCount: 1,
+    clicked: false,
+    ...overrides
+  };
+}
+
+function createFinalizeEntry(id, rank, signalOverrides = {}) {
+  return {
+    candidate: createDiscoveryCandidate({
+      id,
+      url: `https://example.com/${id}`,
+      title: `Result ${id}`,
+      rank
+    }),
+    signals: createUpdateSignals({
+      candidateId: id,
+      visibleMs: 0,
+      hoverMs: 0,
+      hoverCount: 0,
+      returnCount: 0,
+      clicked: false,
+      ...signalOverrides
+    })
+  };
+}
+
+function createFinalizeSession(candidates) {
+  return {
+    sessionId: "session-1",
+    context: createDiscoveryContext(),
+    candidates,
+    updatedAt: 200
+  };
+}
+
+function createFinalizeRouter(repository) {
+  return createMessageRouter(repository, {
+    sessionFinalizeUseCase: createSessionFinalizeUseCase(
+      createSessionManager(repository)
+    )
+  });
+}
+
+test("routes CANDIDATES_DISCOVERED and persists an idempotent Session", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const router = createMessageRouter(repository);
+  const request = createCandidatesDiscoveredMessage(
+    "session-1",
+    createDiscoveryContext(),
+    [createDiscoveryCandidate()],
+    200,
+    "request-discovery-success"
+  );
+
+  const first = await router.route(request);
+  assert.equal(isCandidatesDiscoveredResponse(first), true);
+  assert.deepEqual(first, {
+    schemaVersion: SCHEMA_VERSION,
+    requestId: request.requestId,
+    ok: true,
+    data: {
+      sessionId: "session-1",
+      acceptedCandidateIds: ["candidate-1"],
+      totalCandidateCount: 1,
+      updatedAt: 200
+    }
+  });
+
+  const repeated = await router.route(request);
+  assert.deepEqual(repeated.data, {
+    sessionId: "session-1",
+    acceptedCandidateIds: [],
+    totalCandidateCount: 1,
+    updatedAt: 200
+  });
+  assert.equal((await repository.getSession("session-1")).candidates.length, 1);
+});
+
+test("rejects invalid discovery payload and version before persistence", async () => {
+  let executionCount = 0;
+  const router = createMessageRouter(
+    { async listMissedPaths() { return []; } },
+    {
+      candidateDiscoveryUseCase: {
+        async execute() {
+          executionCount += 1;
+          return {};
+        }
+      }
+    }
+  );
+  const valid = createCandidatesDiscoveredMessage(
+    "session-1",
+    createDiscoveryContext(),
+    [createDiscoveryCandidate()],
+    200,
+    "request-discovery-validation"
+  );
+
+  const invalidPayload = await router.route({
+    ...valid,
+    payload: { ...valid.payload, candidates: [] }
+  });
+  assert.equal(executionCount, 0);
+  assert.deepEqual(invalidPayload.error, {
+    code: RESPONSE_ERROR_CODES.INVALID_REQUEST,
+    message: "Invalid CANDIDATES_DISCOVERED payload.",
+    retryable: false
+  });
+
+  const invalidVersion = await router.route({
+    ...valid,
+    schemaVersion: SCHEMA_VERSION + 1
+  });
+  assert.equal(executionCount, 0);
+  assert.equal(
+    invalidVersion.error.code,
+    RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED
+  );
+  assert.equal(invalidVersion.requestId, valid.requestId);
+});
+
+test("maps Candidate discovery conflicts to a non-retryable response", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const router = createMessageRouter(repository);
+  await router.route(
+    createCandidatesDiscoveredMessage(
+      "session-1",
+      createDiscoveryContext(),
+      [createDiscoveryCandidate()],
+      200,
+      "request-discovery-first"
+    )
+  );
+
+  const response = await router.route(
+    createCandidatesDiscoveredMessage(
+      "session-1",
+      createDiscoveryContext(101),
+      [createDiscoveryCandidate()],
+      300,
+      "request-discovery-conflict"
+    )
+  );
+
+  assert.equal(response.requestId, "request-discovery-conflict");
+  assert.equal(response.ok, false);
+  assert.equal(
+    response.error.code,
+    RESPONSE_ERROR_CODES.CANDIDATE_DISCOVERY_CONFLICT
+  );
+  assert.equal(response.error.retryable, false);
+});
+
+test("maps Candidate discovery storage failures to a retryable response", async () => {
+  const router = createMessageRouter({
+    async listMissedPaths() {
+      return [];
+    },
+    async mergeDiscoveredCandidates() {
+      throw new Error("simulated storage failure");
+    }
+  });
+  const request = createCandidatesDiscoveredMessage(
+    "session-1",
+    createDiscoveryContext(),
+    [createDiscoveryCandidate()],
+    200,
+    "request-discovery-storage"
+  );
+
+  const response = await router.route(request);
+
+  assert.equal(response.requestId, request.requestId);
+  assert.deepEqual(response.error, {
+    code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+    message: "Unable to persist discovered Candidates.",
+    retryable: true
+  });
+});
+
+test("routes SIGNALS_UPDATED as an idempotent absolute snapshot", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.mergeDiscoveredCandidates({
+    sessionId: "session-1",
+    context: createDiscoveryContext(),
+    candidates: [createDiscoveryCandidate()],
+    discoveredAt: 200
+  });
+  const router = createMessageRouter(repository);
+  const request = createSignalsUpdatedMessage(
+    createUpdateSignals(),
+    250,
+    "request-signals-success"
+  );
+
+  const first = await router.route(request);
+  assert.equal(isSignalsUpdatedResponse(first), true);
+  assert.deepEqual(first, {
+    schemaVersion: SCHEMA_VERSION,
+    requestId: request.requestId,
+    ok: true,
+    data: {
+      sessionId: "session-1",
+      candidateId: "candidate-1",
+      updatedAt: 250,
+      changed: true
+    }
+  });
+
+  const repeated = await router.route(request);
+  assert.deepEqual(repeated.data, {
+    sessionId: "session-1",
+    candidateId: "candidate-1",
+    updatedAt: 250,
+    changed: false
+  });
+  assert.deepEqual(
+    (await repository.getSession("session-1")).candidates[0].signals,
+    createUpdateSignals()
+  );
+});
+
+test("rejects invalid SIGNALS_UPDATED payload and version before execution", async () => {
+  let executionCount = 0;
+  const router = createMessageRouter(
+    { async listMissedPaths() { return []; } },
+    {
+      signalsUpdateUseCase: {
+        async execute() {
+          executionCount += 1;
+          return {};
+        }
+      }
+    }
+  );
+  const valid = createSignalsUpdatedMessage(
+    createUpdateSignals(),
+    250,
+    "request-signals-validation"
+  );
+
+  const invalidPayload = await router.route({
+    ...valid,
+    payload: {
+      ...valid.payload,
+      signals: { ...valid.payload.signals, visibleMs: -1 }
+    }
+  });
+  assert.equal(executionCount, 0);
+  assert.deepEqual(invalidPayload.error, {
+    code: RESPONSE_ERROR_CODES.INVALID_REQUEST,
+    message: "Invalid SIGNALS_UPDATED payload.",
+    retryable: false
+  });
+
+  const invalidVersion = await router.route({
+    ...valid,
+    schemaVersion: SCHEMA_VERSION + 1
+  });
+  assert.equal(executionCount, 0);
+  assert.equal(
+    invalidVersion.error.code,
+    RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED
+  );
+  assert.equal(invalidVersion.requestId, valid.requestId);
+});
+
+test("maps signals target conflicts and storage failures", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const conflictRouter = createMessageRouter(repository);
+  const request = createSignalsUpdatedMessage(
+    createUpdateSignals(),
+    250,
+    "request-signals-conflict"
+  );
+
+  const conflict = await conflictRouter.route(request);
+  assert.equal(conflict.requestId, request.requestId);
+  assert.deepEqual(conflict.error, {
+    code: RESPONSE_ERROR_CODES.SIGNALS_UPDATE_CONFLICT,
+    message: "Session not found: session-1",
+    retryable: false
+  });
+
+  const storageRouter = createMessageRouter({
+    async listMissedPaths() {
+      return [];
+    },
+    async mergeCandidateSignalsSnapshot() {
+      throw new Error("simulated storage failure");
+    }
+  });
+  const storage = await storageRouter.route({
+    ...request,
+    requestId: "request-signals-storage"
+  });
+  assert.deepEqual(storage.error, {
+    code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+    message: "Unable to persist Candidate signals.",
+    retryable: true
+  });
+  assert.equal(storage.requestId, "request-signals-storage");
+});
+
+test("rejects SIGNALS_UPDATED for a finalized Session", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.mergeDiscoveredCandidates({
+    sessionId: "session-1",
+    context: createDiscoveryContext(),
+    candidates: [createDiscoveryCandidate()],
+    discoveredAt: 200
+  });
+  await repository.finalizeSessionAtomically({
+    sessionId: "session-1",
+    finalizedAt: 300,
+    chosen: [],
+    missedPaths: []
+  });
+  const router = createMessageRouter(repository);
+  const request = createSignalsUpdatedMessage(
+    createUpdateSignals({
+      visibleMs: 0,
+      hoverMs: 0,
+      hoverCount: 0,
+      returnCount: 0
+    }),
+    350,
+    "request-signals-finalized"
+  );
+
+  const response = await router.route(request);
+
+  assert.equal(response.requestId, request.requestId);
+  assert.equal(response.ok, false);
+  assert.equal(
+    response.error.code,
+    RESPONSE_ERROR_CODES.SIGNALS_UPDATE_CONFLICT
+  );
+  assert.equal(response.error.retryable, false);
+  assert.match(response.error.message, /Cannot update finalized session/u);
+});
+
+test("routes SESSION_FINALIZE and preserves clicked/threshold semantics", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.saveSession(
+    createFinalizeSession([
+      createFinalizeEntry("clicked", 1, {
+        visibleMs: 10_000,
+        returnCount: 2,
+        clicked: true
+      }),
+      createFinalizeEntry("at-threshold", 2, {
+        visibleMs: 10_000,
+        returnCount: 2
+      }),
+      createFinalizeEntry("below-threshold", 3, {
+        visibleMs: 9_999,
+        returnCount: 2
+      })
+    ])
+  );
+  const router = createFinalizeRouter(repository);
+  const request = createSessionFinalizeMessage(
+    "session-1",
+    500,
+    "request-finalize-success"
+  );
+
+  const first = await router.route(request);
+  assert.equal(isSessionFinalizeResponse(first), true);
+  assert.equal(first.requestId, request.requestId);
+  assert.equal(first.ok, true);
+  assert.equal(first.data.sessionId, "session-1");
+  assert.equal(first.data.finalizedAt, 500);
+  assert.equal(first.data.alreadyFinalized, false);
+  assert.deepEqual(
+    first.data.chosen.map((record) => record.candidate.id),
+    ["clicked"]
+  );
+  assert.deepEqual(
+    first.data.missedPaths.map((record) => record.candidate.id),
+    ["at-threshold"]
+  );
+  assert.equal(first.data.missedPaths[0].status, "MISSED");
+
+  const repeated = await router.route(
+    createSessionFinalizeMessage(
+      "session-1",
+      900,
+      "request-finalize-repeat"
+    )
+  );
+  assert.equal(repeated.requestId, "request-finalize-repeat");
+  assert.equal(repeated.data.alreadyFinalized, true);
+  assert.equal(repeated.data.finalizedAt, 500);
+  assert.deepEqual(repeated.data.chosen, first.data.chosen);
+  assert.deepEqual(repeated.data.missedPaths, first.data.missedPaths);
+  assert.equal((await repository.listChosen()).length, 1);
+  assert.equal((await repository.listMissedPaths()).length, 1);
+});
+
+test("SESSION_FINALIZE safely settles an empty Session", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.saveSession(createFinalizeSession([]));
+  const response = await createFinalizeRouter(repository).route(
+    createSessionFinalizeMessage(
+      "session-1",
+      500,
+      "request-finalize-empty"
+    )
+  );
+
+  assert.deepEqual(response.data, {
+    sessionId: "session-1",
+    finalizedAt: 500,
+    alreadyFinalized: false,
+    chosen: [],
+    missedPaths: []
+  });
+  assert.deepEqual(
+    await repository.getSessionFinalization("session-1"),
+    {
+      sessionId: "session-1",
+      finalizedAt: 500,
+      chosenIds: [],
+      missedPathIds: []
+    }
+  );
+});
+
+test("rejects invalid SESSION_FINALIZE payload/version before execution", async () => {
+  let executionCount = 0;
+  const router = createMessageRouter(
+    { async listMissedPaths() { return []; } },
+    {
+      sessionFinalizeUseCase: {
+        async execute() {
+          executionCount += 1;
+          return {};
+        }
+      }
+    }
+  );
+  const valid = createSessionFinalizeMessage(
+    "session-1",
+    500,
+    "request-finalize-validation"
+  );
+
+  const invalidPayload = await router.route({
+    ...valid,
+    payload: { sessionId: "session-1", finalizedAt: -1 }
+  });
+  assert.equal(executionCount, 0);
+  assert.deepEqual(invalidPayload.error, {
+    code: RESPONSE_ERROR_CODES.INVALID_REQUEST,
+    message: "Invalid SESSION_FINALIZE payload.",
+    retryable: false
+  });
+
+  const invalidVersion = await router.route({
+    ...valid,
+    schemaVersion: SCHEMA_VERSION + 1
+  });
+  assert.equal(executionCount, 0);
+  assert.equal(
+    invalidVersion.error.code,
+    RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED
+  );
+  assert.equal(invalidVersion.requestId, valid.requestId);
+});
+
+test("maps missing Session and atomic finalization failure responses", async () => {
+  const missingRepository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const missingRequest = createSessionFinalizeMessage(
+    "session-1",
+    500,
+    "request-finalize-missing"
+  );
+  const missing = await createFinalizeRouter(missingRepository).route(
+    missingRequest
+  );
+  assert.equal(missing.requestId, missingRequest.requestId);
+  assert.deepEqual(missing.error, {
+    code: RESPONSE_ERROR_CODES.SESSION_NOT_FOUND,
+    message: "Session not found: session-1",
+    retryable: false
+  });
+
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  await repository.saveSession(
+    createFinalizeSession([
+      createFinalizeEntry("missed", 1, {
+        visibleMs: 10_000,
+        hoverMs: 3_000
+      })
+    ])
+  );
+  adapter.failNextCommit(new Error("simulated atomic finalization failure"));
+  const failed = await createFinalizeRouter(repository).route(
+    createSessionFinalizeMessage(
+      "session-1",
+      500,
+      "request-finalize-storage"
+    )
+  );
+  assert.equal(failed.requestId, "request-finalize-storage");
+  assert.deepEqual(failed.error, {
+    code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+    message: "Unable to finalize Session.",
+    retryable: true
+  });
+  assert.deepEqual(await repository.listChosen(), []);
+  assert.deepEqual(await repository.listMissedPaths(), []);
+  assert.equal(await repository.getSessionFinalization("session-1"), null);
+});
 
 test("returns persisted Missed Paths in a shared success response", async () => {
   const repository = createRepository(

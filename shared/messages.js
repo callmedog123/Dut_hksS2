@@ -1,21 +1,37 @@
 // @ts-check
 
-import { SCHEMA_VERSION, isSearchContextV1 } from "./types.js";
+import {
+  SCHEMA_VERSION,
+  isCandidateSignalsV1,
+  isCandidateV1,
+  isSearchContextV1
+} from "./types.js";
+import { normalizeCandidateUrl } from "./url.js";
 
 export { SCHEMA_VERSION, SCHEMA_VERSION as MESSAGE_SCHEMA_VERSION };
 
 export const MESSAGE_TYPES = Object.freeze({
   CANDIDATE_CHOSEN: "CANDIDATE_CHOSEN",
+  CANDIDATES_DISCOVERED: "CANDIDATES_DISCOVERED",
   MISSED_PATHS_QUERY: "MISSED_PATHS_QUERY",
   PING: "PING",
   PONG: "PONG",
-  RE_ENCOUNTER_QUERY: "RE_ENCOUNTER_QUERY"
+  RE_ENCOUNTER_QUERY: "RE_ENCOUNTER_QUERY",
+  SESSION_FINALIZE: "SESSION_FINALIZE",
+  SIGNALS_UPDATED: "SIGNALS_UPDATED"
 });
 
 export const RESPONSE_ERROR_CODES = Object.freeze({
+  CANDIDATE_DISCOVERY_CONFLICT: "CANDIDATE_DISCOVERY_CONFLICT",
+  CANDIDATE_DISCOVERY_FAILED: "CANDIDATE_DISCOVERY_FAILED",
   INVALID_REQUEST: "INVALID_REQUEST",
   REENCOUNTER_QUERY_FAILED: "REENCOUNTER_QUERY_FAILED",
   SCHEMA_VERSION_UNSUPPORTED: "SCHEMA_VERSION_UNSUPPORTED",
+  SESSION_FINALIZE_CONFLICT: "SESSION_FINALIZE_CONFLICT",
+  SESSION_FINALIZE_FAILED: "SESSION_FINALIZE_FAILED",
+  SESSION_NOT_FOUND: "SESSION_NOT_FOUND",
+  SIGNALS_UPDATE_CONFLICT: "SIGNALS_UPDATE_CONFLICT",
+  SIGNALS_UPDATE_FAILED: "SIGNALS_UPDATE_FAILED",
   STORAGE_ERROR: "STORAGE_ERROR"
 });
 
@@ -37,6 +53,38 @@ export const RESPONSE_ERROR_CODES = Object.freeze({
  *   responder: string,
  *   receivedSentAt: number,
  *   respondedAt: number
+ * }} payload
+ */
+
+/**
+ * @typedef {object} SessionFinalizeMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.SESSION_FINALIZE} type
+ * @property {string} requestId
+ * @property {{sessionId: string, finalizedAt: number}} payload
+ */
+
+/**
+ * @typedef {object} SignalsUpdatedMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.SIGNALS_UPDATED} type
+ * @property {string} requestId
+ * @property {{
+ *   signals: import("./types.js").CandidateSignalsV1,
+ *   updatedAt: number
+ * }} payload
+ */
+
+/**
+ * @typedef {object} CandidatesDiscoveredMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.CANDIDATES_DISCOVERED} type
+ * @property {string} requestId
+ * @property {{
+ *   sessionId: string,
+ *   context: import("./types.js").SearchContextV1,
+ *   candidates: import("./types.js").CandidateV1[],
+ *   discoveredAt: number
  * }} payload
  */
 
@@ -106,6 +154,20 @@ const CANDIDATE_CHOSEN_PAYLOAD_KEYS = Object.freeze([
   "clicked",
   "chosenAt"
 ]);
+const CANDIDATES_DISCOVERED_PAYLOAD_KEYS = Object.freeze([
+  "sessionId",
+  "context",
+  "candidates",
+  "discoveredAt"
+]);
+const SIGNALS_UPDATED_PAYLOAD_KEYS = Object.freeze([
+  "signals",
+  "updatedAt"
+]);
+const SESSION_FINALIZE_PAYLOAD_KEYS = Object.freeze([
+  "sessionId",
+  "finalizedAt"
+]);
 const REENCOUNTER_QUERY_PAYLOAD_KEYS = Object.freeze([
   "context",
   "limit"
@@ -130,6 +192,18 @@ const RESPONSE_ERROR_KEYS = Object.freeze([
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isDomainRecordWithoutRepositoryEnvelope(value) {
+  return Boolean(
+    isRecord(value) &&
+      !(
+        Object.hasOwn(value, "schemaVersion") &&
+        Object.hasOwn(value, "kind") &&
+        Object.hasOwn(value, "id") &&
+        Object.hasOwn(value, "data")
+      )
+  );
 }
 
 function hasExactKeys(value, expectedKeys) {
@@ -342,6 +416,157 @@ export function isCandidateChosenMessage(message) {
 }
 
 /**
+ * Create one absolute Candidate discovery batch. Existing message structures
+ * remain unchanged; retries are made safe by Candidate/session identity.
+ *
+ * @param {string} sessionId
+ * @param {import("./types.js").SearchContextV1} context
+ * @param {import("./types.js").CandidateV1[]} candidates
+ * @param {number} [discoveredAt]
+ * @param {string} [requestId]
+ * @returns {CandidatesDiscoveredMessageV1}
+ */
+export function createCandidatesDiscoveredMessage(
+  sessionId,
+  context,
+  candidates,
+  discoveredAt = Date.now(),
+  requestId = createRequestId()
+) {
+  requireRequestId(requestId, "CANDIDATES_DISCOVERED");
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.CANDIDATES_DISCOVERED,
+    requestId,
+    payload: { sessionId, context, candidates, discoveredAt }
+  };
+  if (!isCandidatesDiscoveredMessage(message)) {
+    throw new TypeError(
+      "Failed to create a valid CANDIDATES_DISCOVERED message."
+    );
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is CandidatesDiscoveredMessageV1}
+ */
+export function isCandidatesDiscoveredMessage(message) {
+  if (
+    !hasValidEnvelope(message, MESSAGE_TYPES.CANDIDATES_DISCOVERED) ||
+    !hasExactKeys(message.payload, CANDIDATES_DISCOVERED_PAYLOAD_KEYS) ||
+    !isNonEmptyString(message.payload.sessionId) ||
+    !isSearchContextV1(message.payload.context) ||
+    !Array.isArray(message.payload.candidates) ||
+    message.payload.candidates.length === 0 ||
+    !isFiniteNumber(message.payload.discoveredAt) ||
+    message.payload.discoveredAt < 0
+  ) {
+    return false;
+  }
+
+  const candidateIds = new Set();
+  const normalizedUrls = new Set();
+  for (const candidate of message.payload.candidates) {
+    const normalizedUrl = isCandidateV1(candidate)
+      ? normalizeCandidateUrl(candidate.url)
+      : null;
+    if (
+      normalizedUrl === null ||
+      normalizedUrl !== candidate.url ||
+      candidate.sessionId !== message.payload.sessionId ||
+      candidateIds.has(candidate.id) ||
+      normalizedUrls.has(normalizedUrl)
+    ) {
+      return false;
+    }
+    candidateIds.add(candidate.id);
+    normalizedUrls.add(normalizedUrl);
+  }
+  return true;
+}
+
+/**
+ * Create one cumulative absolute signal snapshot. Retried or out-of-order
+ * delivery remains safe because persistence merges monotonic fields.
+ *
+ * @param {import("./types.js").CandidateSignalsV1} signals
+ * @param {number} [updatedAt]
+ * @param {string} [requestId]
+ * @returns {SignalsUpdatedMessageV1}
+ */
+export function createSignalsUpdatedMessage(
+  signals,
+  updatedAt = Date.now(),
+  requestId = createRequestId()
+) {
+  requireRequestId(requestId, "SIGNALS_UPDATED");
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.SIGNALS_UPDATED,
+    requestId,
+    payload: { signals, updatedAt }
+  };
+  if (!isSignalsUpdatedMessage(message)) {
+    throw new TypeError("Failed to create a valid SIGNALS_UPDATED message.");
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is SignalsUpdatedMessageV1}
+ */
+export function isSignalsUpdatedMessage(message) {
+  return Boolean(
+    hasValidEnvelope(message, MESSAGE_TYPES.SIGNALS_UPDATED) &&
+      hasExactKeys(message.payload, SIGNALS_UPDATED_PAYLOAD_KEYS) &&
+      isCandidateSignalsV1(message.payload.signals) &&
+      isFiniteNumber(message.payload.updatedAt) &&
+      message.payload.updatedAt >= 0
+  );
+}
+
+/**
+ * @param {string} sessionId
+ * @param {number} [finalizedAt]
+ * @param {string} [requestId]
+ * @returns {SessionFinalizeMessageV1}
+ */
+export function createSessionFinalizeMessage(
+  sessionId,
+  finalizedAt = Date.now(),
+  requestId = createRequestId()
+) {
+  requireRequestId(requestId, "SESSION_FINALIZE");
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.SESSION_FINALIZE,
+    requestId,
+    payload: { sessionId, finalizedAt }
+  };
+  if (!isSessionFinalizeMessage(message)) {
+    throw new TypeError("Failed to create a valid SESSION_FINALIZE message.");
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is SessionFinalizeMessageV1}
+ */
+export function isSessionFinalizeMessage(message) {
+  return Boolean(
+    hasValidEnvelope(message, MESSAGE_TYPES.SESSION_FINALIZE) &&
+      hasExactKeys(message.payload, SESSION_FINALIZE_PAYLOAD_KEYS) &&
+      isNonEmptyString(message.payload.sessionId) &&
+      isFiniteNumber(message.payload.finalizedAt) &&
+      message.payload.finalizedAt >= 0
+  );
+}
+
+/**
  * @param {string} [requestId]
  * @returns {MissedPathsQueryMessageV1}
  */
@@ -473,6 +698,99 @@ export function isResponseMessage(message) {
       isNonEmptyString(message.error.code) &&
       isNonEmptyString(message.error.message) &&
       typeof message.error.retryable === "boolean"
+  );
+}
+
+/**
+ * @param {unknown} message
+ * @returns {boolean}
+ */
+export function isCandidatesDiscoveredResponse(message) {
+  if (!isResponseMessage(message)) {
+    return false;
+  }
+  if (message.ok === false) {
+    return true;
+  }
+  if (
+    !hasExactKeys(message.data, [
+      "sessionId",
+      "acceptedCandidateIds",
+      "totalCandidateCount",
+      "updatedAt"
+    ]) ||
+    !isNonEmptyString(message.data.sessionId) ||
+    !Array.isArray(message.data.acceptedCandidateIds) ||
+    !message.data.acceptedCandidateIds.every(isNonEmptyString) ||
+    new Set(message.data.acceptedCandidateIds).size !==
+      message.data.acceptedCandidateIds.length ||
+    !Number.isInteger(message.data.totalCandidateCount) ||
+    message.data.totalCandidateCount <
+      message.data.acceptedCandidateIds.length ||
+    !isFiniteNumber(message.data.updatedAt) ||
+    message.data.updatedAt < 0
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {boolean}
+ */
+export function isSignalsUpdatedResponse(message) {
+  if (!isResponseMessage(message)) {
+    return false;
+  }
+  if (message.ok === false) {
+    return true;
+  }
+  return Boolean(
+    hasExactKeys(message.data, [
+      "sessionId",
+      "candidateId",
+      "updatedAt",
+      "changed"
+    ]) &&
+      isNonEmptyString(message.data.sessionId) &&
+      isNonEmptyString(message.data.candidateId) &&
+      isFiniteNumber(message.data.updatedAt) &&
+      message.data.updatedAt >= 0 &&
+      typeof message.data.changed === "boolean"
+  );
+}
+
+/**
+ * Session finalization returns domain records only, never Repository record
+ * envelopes or the durable internal marker.
+ *
+ * @param {unknown} message
+ * @returns {boolean}
+ */
+export function isSessionFinalizeResponse(message) {
+  if (!isResponseMessage(message)) {
+    return false;
+  }
+  if (message.ok === false) {
+    return true;
+  }
+  return Boolean(
+    hasExactKeys(message.data, [
+      "sessionId",
+      "finalizedAt",
+      "alreadyFinalized",
+      "chosen",
+      "missedPaths"
+    ]) &&
+      isNonEmptyString(message.data.sessionId) &&
+      isFiniteNumber(message.data.finalizedAt) &&
+      message.data.finalizedAt >= 0 &&
+      typeof message.data.alreadyFinalized === "boolean" &&
+      Array.isArray(message.data.chosen) &&
+      message.data.chosen.every(isDomainRecordWithoutRepositoryEnvelope) &&
+      Array.isArray(message.data.missedPaths) &&
+      message.data.missedPaths.every(isDomainRecordWithoutRepositoryEnvelope)
   );
 }
 

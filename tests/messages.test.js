@@ -7,20 +7,29 @@ import {
   RESPONSE_ERROR_CODES,
   SCHEMA_VERSION,
   createCandidateChosenMessage,
+  createCandidatesDiscoveredMessage,
   createErrorResponseMessage,
   createMissedPathsQueryMessage,
   createPingMessage,
   createPongMessage,
   createReencounterQueryMessage,
+  createSessionFinalizeMessage,
+  createSignalsUpdatedMessage,
   createSuccessResponseMessage,
   isCandidateChosenMessage,
+  isCandidatesDiscoveredMessage,
+  isCandidatesDiscoveredResponse,
   isMissedPathsQueryMessage,
   isMissedPathsQueryResponse,
   isPingMessage,
   isPongMessage,
   isReencounterQueryMessage,
   isReencounterQueryResponse,
-  isResponseMessage
+  isResponseMessage,
+  isSessionFinalizeMessage,
+  isSessionFinalizeResponse,
+  isSignalsUpdatedMessage,
+  isSignalsUpdatedResponse
 } from "../shared/messages.js";
 import { createFakeIndexedDB } from "./storage/fixtures/fakeIndexedDB.js";
 
@@ -33,6 +42,56 @@ const chosen = createCandidateChosenMessage(
   { id: "candidate-1", sessionId: "session-1" },
   200,
   "request-chosen"
+);
+const discoveredContext = {
+  query: "robot navigation",
+  source: "local-demo",
+  timestamp: 100,
+  keywords: ["robot", "navigation"]
+};
+const discoveredCandidates = [
+  {
+    id: "candidate-1",
+    url: "https://example.com/result-1",
+    title: "Result one",
+    source: "local-demo",
+    rank: 1,
+    sessionId: "session-1"
+  },
+  {
+    id: "candidate-2",
+    url: "https://example.com/result-2",
+    title: "Result two",
+    source: "local-demo",
+    rank: 2,
+    sessionId: "session-1"
+  }
+];
+const candidatesDiscovered = createCandidatesDiscoveredMessage(
+  "session-1",
+  discoveredContext,
+  discoveredCandidates,
+  200,
+  "request-discovered"
+);
+const signalsSnapshot = {
+  candidateId: "candidate-1",
+  sessionId: "session-1",
+  visibleMs: 1_000,
+  hoverMs: 200,
+  hoverCount: 2,
+  returnCount: 1,
+  clicked: false
+};
+const signalsUpdated = createSignalsUpdatedMessage(
+  signalsSnapshot,
+  250,
+  "request-signals"
+);
+const sessionFinalize = createSessionFinalizeMessage(
+  "session-1",
+  500,
+  "request-finalize"
 );
 const missedPathsQuery = createMissedPathsQueryMessage("request-missed-paths");
 const reencounterContext = {
@@ -67,6 +126,24 @@ const messageCases = [
     wrongType: MESSAGE_TYPES.PING
   },
   {
+    name: "CANDIDATES_DISCOVERED",
+    message: candidatesDiscovered,
+    validator: isCandidatesDiscoveredMessage,
+    wrongType: MESSAGE_TYPES.PING
+  },
+  {
+    name: "SIGNALS_UPDATED",
+    message: signalsUpdated,
+    validator: isSignalsUpdatedMessage,
+    wrongType: MESSAGE_TYPES.PING
+  },
+  {
+    name: "SESSION_FINALIZE",
+    message: sessionFinalize,
+    validator: isSessionFinalizeMessage,
+    wrongType: MESSAGE_TYPES.PING
+  },
+  {
     name: "MISSED_PATHS_QUERY",
     message: missedPathsQuery,
     validator: isMissedPathsQueryMessage,
@@ -83,11 +160,14 @@ const messageCases = [
 test("keeps MESSAGE_TYPES frozen with the implemented v1 messages", () => {
   assert.equal(Object.isFrozen(MESSAGE_TYPES), true);
   assert.deepEqual(Object.keys(MESSAGE_TYPES).sort(), [
+    "CANDIDATES_DISCOVERED",
     "CANDIDATE_CHOSEN",
     "MISSED_PATHS_QUERY",
     "PING",
     "PONG",
-    "RE_ENCOUNTER_QUERY"
+    "RE_ENCOUNTER_QUERY",
+    "SESSION_FINALIZE",
+    "SIGNALS_UPDATED"
   ]);
 });
 
@@ -129,6 +209,162 @@ test("creates an exact CANDIDATE_CHOSEN that passes its validator", () => {
     }
   });
   assert.equal(isCandidateChosenMessage(chosen), true);
+});
+
+test("creates a strict CANDIDATES_DISCOVERED batch", () => {
+  assert.deepEqual(candidatesDiscovered, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.CANDIDATES_DISCOVERED,
+    requestId: "request-discovered",
+    payload: {
+      sessionId: "session-1",
+      context: discoveredContext,
+      candidates: discoveredCandidates,
+      discoveredAt: 200
+    }
+  });
+  assert.equal(isCandidatesDiscoveredMessage(candidatesDiscovered), true);
+  assert.throws(
+    () =>
+      createCandidatesDiscoveredMessage(
+        "session-1",
+        discoveredContext,
+        [],
+        200,
+        "request-discovered-empty"
+      ),
+    TypeError
+  );
+  assert.equal(
+    isCandidatesDiscoveredMessage({
+      ...candidatesDiscovered,
+      payload: {
+        ...candidatesDiscovered.payload,
+        candidates: [
+          discoveredCandidates[0],
+          { ...discoveredCandidates[1], id: "candidate-1" }
+        ]
+      }
+    }),
+    false
+  );
+  assert.equal(
+    isCandidatesDiscoveredMessage({
+      ...candidatesDiscovered,
+      payload: {
+        ...candidatesDiscovered.payload,
+        candidates: [
+          discoveredCandidates[0],
+          {
+            ...discoveredCandidates[1],
+            url: "https://example.com/result-1#duplicate"
+          }
+        ]
+      }
+    }),
+    false
+  );
+  assert.equal(
+    isCandidatesDiscoveredMessage({
+      ...candidatesDiscovered,
+      payload: {
+        ...candidatesDiscovered.payload,
+        candidates: [
+          { ...discoveredCandidates[0], sessionId: "session-other" }
+        ]
+      }
+    }),
+    false
+  );
+  assert.equal(
+    isCandidatesDiscoveredMessage({
+      ...candidatesDiscovered,
+      payload: {
+        ...candidatesDiscovered.payload,
+        candidates: [
+          {
+            ...discoveredCandidates[0],
+            url: "https://example.com/result-1?utm_source=test"
+          }
+        ]
+      }
+    }),
+    false
+  );
+});
+
+test("creates a strict SIGNALS_UPDATED absolute snapshot", () => {
+  assert.deepEqual(signalsUpdated, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.SIGNALS_UPDATED,
+    requestId: "request-signals",
+    payload: {
+      signals: signalsSnapshot,
+      updatedAt: 250
+    }
+  });
+  assert.equal(isSignalsUpdatedMessage(signalsUpdated), true);
+  assert.throws(
+    () => createSignalsUpdatedMessage(signalsSnapshot, -1, "request-signals"),
+    TypeError
+  );
+  assert.throws(
+    () =>
+      createSignalsUpdatedMessage(
+        { ...signalsSnapshot, hoverCount: 1.5 },
+        250,
+        "request-signals"
+      ),
+    TypeError
+  );
+  assert.equal(
+    isSignalsUpdatedMessage({
+      ...signalsUpdated,
+      payload: {
+        ...signalsUpdated.payload,
+        signals: { ...signalsSnapshot, extra: true }
+      }
+    }),
+    false
+  );
+  assert.equal(
+    isSignalsUpdatedMessage({
+      ...signalsUpdated,
+      payload: { ...signalsUpdated.payload, updatedAt: Number.POSITIVE_INFINITY }
+    }),
+    false
+  );
+});
+
+test("creates a strict SESSION_FINALIZE request", () => {
+  assert.deepEqual(sessionFinalize, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.SESSION_FINALIZE,
+    requestId: "request-finalize",
+    payload: {
+      sessionId: "session-1",
+      finalizedAt: 500
+    }
+  });
+  assert.equal(isSessionFinalizeMessage(sessionFinalize), true);
+  assert.throws(
+    () => createSessionFinalizeMessage("", 500, "request-finalize"),
+    TypeError
+  );
+  assert.throws(
+    () => createSessionFinalizeMessage("session-1", -1, "request-finalize"),
+    TypeError
+  );
+  assert.equal(
+    isSessionFinalizeMessage({
+      ...sessionFinalize,
+      payload: {
+        sessionId: "session-1",
+        finalizedAt: Number.POSITIVE_INFINITY
+      }
+    }),
+    false
+  );
 });
 
 test("creates an exact MISSED_PATHS_QUERY with a strict empty payload", () => {
@@ -212,6 +448,84 @@ test("shared ResponseMessage factories create strict success and error shapes", 
   assert.equal(isMissedPathsQueryResponse(success), true);
   assert.equal(isMissedPathsQueryResponse(error), true);
   assert.equal(
+    isCandidatesDiscoveredResponse(
+      createSuccessResponseMessage("request-discovery-response", {
+        sessionId: "session-1",
+        acceptedCandidateIds: ["candidate-1"],
+        totalCandidateCount: 2,
+        updatedAt: 200
+      })
+    ),
+    true
+  );
+  assert.equal(isCandidatesDiscoveredResponse(error), true);
+  assert.equal(
+    isSignalsUpdatedResponse(
+      createSuccessResponseMessage("request-signals-response", {
+        sessionId: "session-1",
+        candidateId: "candidate-1",
+        updatedAt: 250,
+        changed: true
+      })
+    ),
+    true
+  );
+  assert.equal(
+    isSignalsUpdatedResponse(
+      createSuccessResponseMessage("request-invalid-signals-response", {
+        sessionId: "session-1",
+        candidateId: "candidate-1",
+        updatedAt: 250,
+        changed: 1
+      })
+    ),
+    false
+  );
+  assert.equal(
+    isSessionFinalizeResponse(
+      createSuccessResponseMessage("request-finalize-response", {
+        sessionId: "session-1",
+        finalizedAt: 500,
+        alreadyFinalized: false,
+        chosen: [],
+        missedPaths: []
+      })
+    ),
+    true
+  );
+  assert.equal(
+    isSessionFinalizeResponse(
+      createSuccessResponseMessage("request-invalid-finalize-response", {
+        sessionId: "session-1",
+        finalizedAt: 500,
+        alreadyFinalized: false,
+        chosen: [],
+        missedPaths: [],
+        marker: {}
+      })
+    ),
+    false
+  );
+  assert.equal(
+    isSessionFinalizeResponse(
+      createSuccessResponseMessage("request-envelope-finalize-response", {
+        sessionId: "session-1",
+        finalizedAt: 500,
+        alreadyFinalized: false,
+        chosen: [
+          {
+            schemaVersion: 1,
+            kind: "chosen",
+            id: "chosen-1",
+            data: {}
+          }
+        ],
+        missedPaths: []
+      })
+    ),
+    false
+  );
+  assert.equal(
     isReencounterQueryResponse(
       createSuccessResponseMessage("request-reencounter-response", {
         reencounters: []
@@ -231,6 +545,17 @@ test("shared ResponseMessage factories create strict success and error shapes", 
   assert.equal(
     isMissedPathsQueryResponse(
       createSuccessResponseMessage("request-wrong-data", { paths: [] })
+    ),
+    false
+  );
+  assert.equal(
+    isCandidatesDiscoveredResponse(
+      createSuccessResponseMessage("request-invalid-discovery-response", {
+        sessionId: "session-1",
+        acceptedCandidateIds: ["candidate-1", "candidate-1"],
+        totalCandidateCount: 1,
+        updatedAt: 200
+      })
     ),
     false
   );

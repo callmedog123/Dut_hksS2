@@ -6,6 +6,7 @@ import {
   isCandidateV1,
   isSearchContextV1
 } from "../shared/types.js";
+import { normalizeCandidateUrl } from "../shared/url.js";
 
 export const REPOSITORY_SCHEMA_KEY = "meta:schema";
 
@@ -460,11 +461,290 @@ export function createRepository(adapter) {
         isSessionState
       );
     },
+    async mergeDiscoveredCandidates(discovery) {
+      if (
+        !hasExactKeys(discovery, [
+          "sessionId",
+          "context",
+          "candidates",
+          "discoveredAt"
+        ]) ||
+        !isNonEmptyString(discovery.sessionId) ||
+        !isSearchContextV1(discovery.context) ||
+        !Array.isArray(discovery.candidates) ||
+        discovery.candidates.length === 0 ||
+        !isFiniteNonNegativeNumber(discovery.discoveredAt)
+      ) {
+        throw new RepositoryDataError("Invalid Candidate discovery data.");
+      }
+
+      const batchIds = new Set();
+      const batchUrls = new Set();
+      for (const candidate of discovery.candidates) {
+        const normalizedUrl = isCandidateV1(candidate)
+          ? normalizeCandidateUrl(candidate.url)
+          : null;
+        if (
+          normalizedUrl === null ||
+          normalizedUrl !== candidate.url ||
+          candidate.sessionId !== discovery.sessionId ||
+          batchIds.has(candidate.id) ||
+          batchUrls.has(normalizedUrl)
+        ) {
+          throw new RepositoryDataError(
+            "Candidate discovery contains invalid or duplicate Candidates."
+          );
+        }
+        batchIds.add(candidate.id);
+        batchUrls.add(normalizedUrl);
+      }
+
+      await ensureCompatibleVersion();
+      const sessionKey = recordKey(
+        REPOSITORY_KINDS.SESSION,
+        discovery.sessionId
+      );
+      const finalizationKey = recordKey(
+        REPOSITORY_KINDS.SESSION_FINALIZATION,
+        discovery.sessionId
+      );
+      const storedFinalization = await adapter.get(finalizationKey);
+      if (storedFinalization !== undefined) {
+        const finalization = validateStoredRecord(
+          storedFinalization,
+          REPOSITORY_KINDS.SESSION_FINALIZATION,
+          discovery.sessionId
+        );
+        if (!isSessionFinalization(finalization)) {
+          throw new RepositoryDataError(
+            "Stored session-finalization data is invalid."
+          );
+        }
+        throw new RepositoryDataError(
+          `Cannot add Candidates to finalized session: ${discovery.sessionId}`
+        );
+      }
+
+      const storedSession = await adapter.get(sessionKey);
+      let session;
+      if (storedSession === undefined) {
+        session = {
+          sessionId: discovery.sessionId,
+          context: cloneJson(discovery.context),
+          candidates: [],
+          updatedAt: discovery.discoveredAt
+        };
+      } else {
+        session = validateStoredRecord(
+          storedSession,
+          REPOSITORY_KINDS.SESSION,
+          discovery.sessionId
+        );
+        if (!isSessionState(session)) {
+          throw new RepositoryDataError("Stored session data is invalid.");
+        }
+        if (!isSameJson(session.context, discovery.context)) {
+          throw new RepositoryDataError(
+            `SearchContext conflicts with session: ${discovery.sessionId}`
+          );
+        }
+        session = cloneJson(session);
+      }
+
+      const candidatesById = new Map(
+        session.candidates.map((entry) => [entry.candidate.id, entry.candidate])
+      );
+      const candidateIdsByUrl = new Map();
+      for (const entry of session.candidates) {
+        const normalizedUrl = normalizeCandidateUrl(entry.candidate.url);
+        if (normalizedUrl === null) {
+          throw new RepositoryDataError(
+            "Stored session Candidate URL is invalid."
+          );
+        }
+        candidateIdsByUrl.set(normalizedUrl, entry.candidate.id);
+      }
+
+      const acceptedCandidateIds = [];
+      for (const candidate of discovery.candidates) {
+        const existingCandidate = candidatesById.get(candidate.id);
+        if (existingCandidate !== undefined) {
+          if (
+            existingCandidate.url !== candidate.url ||
+            existingCandidate.title !== candidate.title ||
+            existingCandidate.source !== candidate.source
+          ) {
+            throw new RepositoryDataError(
+              `Candidate identity conflicts with stored Candidate: ${candidate.id}`
+            );
+          }
+          continue;
+        }
+
+        const existingIdForUrl = candidateIdsByUrl.get(candidate.url);
+        if (existingIdForUrl !== undefined) {
+          throw new RepositoryDataError(
+            `Candidate URL conflicts with stored Candidate: ${existingIdForUrl}`
+          );
+        }
+
+        session.candidates.push({
+          candidate: cloneJson(candidate),
+          signals: {
+            candidateId: candidate.id,
+            sessionId: discovery.sessionId,
+            visibleMs: 0,
+            hoverMs: 0,
+            hoverCount: 0,
+            returnCount: 0,
+            clicked: false
+          }
+        });
+        candidatesById.set(candidate.id, candidate);
+        candidateIdsByUrl.set(candidate.url, candidate.id);
+        acceptedCandidateIds.push(candidate.id);
+      }
+
+      if (acceptedCandidateIds.length > 0) {
+        session.updatedAt = Math.max(
+          session.updatedAt,
+          discovery.discoveredAt
+        );
+        await adapter.commit({
+          puts: [
+            {
+              key: sessionKey,
+              value: createStoredRecord(
+                REPOSITORY_KINDS.SESSION,
+                discovery.sessionId,
+                session
+              )
+            }
+          ]
+        });
+      }
+
+      return {
+        sessionId: discovery.sessionId,
+        acceptedCandidateIds,
+        totalCandidateCount: session.candidates.length,
+        updatedAt: session.updatedAt
+      };
+    },
     getSession(sessionId) {
       return getRecord(REPOSITORY_KINDS.SESSION, sessionId, isSessionState);
     },
     listSessions() {
       return listRecords(REPOSITORY_KINDS.SESSION, isSessionState);
+    },
+    async mergeCandidateSignalsSnapshot(update) {
+      if (
+        !hasExactKeys(update, ["signals", "updatedAt"]) ||
+        !isCandidateSignalsV1(update.signals) ||
+        !isFiniteNonNegativeNumber(update.updatedAt)
+      ) {
+        throw new RepositoryDataError("Invalid Candidate signals snapshot.");
+      }
+
+      await ensureCompatibleVersion();
+      const { signals, updatedAt } = update;
+      const sessionKey = recordKey(
+        REPOSITORY_KINDS.SESSION,
+        signals.sessionId
+      );
+      const storedSession = await adapter.get(sessionKey);
+      if (storedSession === undefined) {
+        throw new RepositoryDataError(
+          `Session not found: ${signals.sessionId}`
+        );
+      }
+
+      const session = validateStoredRecord(
+        storedSession,
+        REPOSITORY_KINDS.SESSION,
+        signals.sessionId
+      );
+      if (!isSessionState(session)) {
+        throw new RepositoryDataError("Stored session data is invalid.");
+      }
+
+      const finalizationKey = recordKey(
+        REPOSITORY_KINDS.SESSION_FINALIZATION,
+        signals.sessionId
+      );
+      const storedFinalization = await adapter.get(finalizationKey);
+      if (storedFinalization !== undefined) {
+        const finalization = validateStoredRecord(
+          storedFinalization,
+          REPOSITORY_KINDS.SESSION_FINALIZATION,
+          signals.sessionId
+        );
+        if (!isSessionFinalization(finalization)) {
+          throw new RepositoryDataError(
+            "Stored session-finalization data is invalid."
+          );
+        }
+        throw new RepositoryDataError(
+          `Cannot update finalized session: ${signals.sessionId}`
+        );
+      }
+
+      const candidateIndex = session.candidates.findIndex(
+        (entry) => entry.candidate.id === signals.candidateId
+      );
+      if (candidateIndex < 0) {
+        throw new RepositoryDataError(
+          `Candidate ${signals.candidateId} is not part of session ${signals.sessionId}.`
+        );
+      }
+
+      const previousSignals = session.candidates[candidateIndex].signals;
+      const mergedSignals = {
+        candidateId: previousSignals.candidateId,
+        sessionId: previousSignals.sessionId,
+        visibleMs: Math.max(previousSignals.visibleMs, signals.visibleMs),
+        hoverMs: Math.max(previousSignals.hoverMs, signals.hoverMs),
+        hoverCount: Math.max(
+          previousSignals.hoverCount,
+          signals.hoverCount
+        ),
+        returnCount: Math.max(
+          previousSignals.returnCount,
+          signals.returnCount
+        ),
+        clicked: previousSignals.clicked || signals.clicked
+      };
+      const changed = !isSameJson(previousSignals, mergedSignals);
+      if (changed) {
+        const nextSession = cloneJson(session);
+        nextSession.candidates[candidateIndex].signals = mergedSignals;
+        nextSession.updatedAt = Math.max(session.updatedAt, updatedAt);
+        await adapter.commit({
+          puts: [
+            {
+              key: sessionKey,
+              value: createStoredRecord(
+                REPOSITORY_KINDS.SESSION,
+                signals.sessionId,
+                nextSession
+              )
+            }
+          ]
+        });
+        return {
+          sessionId: signals.sessionId,
+          candidateId: signals.candidateId,
+          updatedAt: nextSession.updatedAt,
+          changed: true
+        };
+      }
+
+      return {
+        sessionId: signals.sessionId,
+        candidateId: signals.candidateId,
+        updatedAt: session.updatedAt,
+        changed: false
+      };
     },
     async markCandidateChosen(sessionId, candidateId, updatedAt) {
       if (

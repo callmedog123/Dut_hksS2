@@ -3,7 +3,9 @@ class FixtureElement {
     this.attributes = new Map(Object.entries(attributes));
     this.textContent = textContent;
     this.children = [];
+    this.parentNode = null;
     this.observers = new Set();
+    this.listeners = new Map();
   }
 
   getAttribute(name) {
@@ -11,11 +13,53 @@ class FixtureElement {
   }
 
   appendChild(child) {
+    child.parentNode = this;
     this.children.push(child);
     for (const observer of this.observers) {
       observer.notify();
     }
     return child;
+  }
+
+  replaceChildren(...children) {
+    for (const child of this.children) {
+      child.parentNode = null;
+    }
+    for (const child of children) {
+      child.parentNode = this;
+    }
+    this.children = [...children];
+    for (const observer of this.observers) {
+      observer.notify();
+    }
+  }
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type, listener) {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatchEvent(event) {
+    if (typeof event !== "object" || event === null) {
+      throw new TypeError("Fixture event must be an object.");
+    }
+    event.target ??= this;
+    for (const listener of this.listeners.get(event.type) ?? []) {
+      listener(event);
+    }
+    if (event.bubbles === true && this.parentNode !== null) {
+      this.parentNode.dispatchEvent(event);
+    }
+    return event.defaultPrevented !== true;
+  }
+
+  listenerCount(type) {
+    return this.listeners.get(type)?.size ?? 0;
   }
 
   querySelector(selector) {
@@ -47,6 +91,9 @@ class FixtureDocument {
   constructor(root, baseURI) {
     this.root = root;
     this.baseURI = baseURI;
+    this.hidden = false;
+    this.listeners = new Map();
+    root.parentNode = this;
   }
 
   querySelector(selector) {
@@ -55,6 +102,28 @@ class FixtureDocument {
 
   querySelectorAll(selector) {
     return this.root.querySelectorAll(selector);
+  }
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type, listener) {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatchEvent(event) {
+    event.target ??= this;
+    for (const listener of this.listeners.get(event.type) ?? []) {
+      listener(event);
+    }
+    return event.defaultPrevented !== true;
+  }
+
+  listenerCount(type) {
+    return this.listeners.get(type)?.size ?? 0;
   }
 }
 
@@ -111,6 +180,59 @@ export function createMutationObserverHarness() {
   return { MutationObserver: FixtureMutationObserver, instances };
 }
 
+export function createIntersectionObserverHarness({
+  initiallyVisible = true
+} = {}) {
+  const instances = [];
+
+  class FixtureIntersectionObserver {
+    constructor(callback, options) {
+      this.callback = callback;
+      this.options = options;
+      this.observed = new Set();
+      this.disconnectCount = 0;
+      instances.push(this);
+    }
+
+    observe(element) {
+      this.observed.add(element);
+      this.emit(element, initiallyVisible);
+    }
+
+    unobserve(element) {
+      this.observed.delete(element);
+    }
+
+    disconnect() {
+      this.disconnectCount += 1;
+      this.observed.clear();
+    }
+
+    emit(element, visible) {
+      if (!this.observed.has(element)) {
+        return;
+      }
+      this.callback([
+        {
+          target: element,
+          isIntersecting: visible,
+          intersectionRatio: visible ? 1 : 0
+        }
+      ]);
+    }
+  }
+
+  return {
+    IntersectionObserver: FixtureIntersectionObserver,
+    instances,
+    setVisible(element, visible) {
+      for (const instance of instances) {
+        instance.emit(element, visible);
+      }
+    }
+  };
+}
+
 export function createDemoDocumentFixture({
   candidates = [],
   query = "robot navigation",
@@ -135,14 +257,28 @@ export function createDemoDocumentFixture({
   page.appendChild(results);
   root.appendChild(page);
 
-  for (const candidate of candidates) {
-    results.appendChild(createCandidateElement(candidate));
-  }
+  let candidateElements = candidates.map(createCandidateElement);
+  results.replaceChildren(...candidateElements);
 
   return {
     document: new FixtureDocument(root, baseURI),
+    get candidateElements() {
+      return [...candidateElements];
+    },
     addCandidate(candidate) {
-      results.appendChild(createCandidateElement(candidate));
+      const element = createCandidateElement(candidate);
+      candidateElements.push(element);
+      results.appendChild(element);
+      return element;
+    },
+    replaceCandidates(nextCandidates) {
+      candidateElements = nextCandidates.map(createCandidateElement);
+      results.replaceChildren(...candidateElements);
+    },
+    removeCandidate(index) {
+      const [removed] = candidateElements.splice(index, 1);
+      results.replaceChildren(...candidateElements);
+      return removed ?? null;
     },
     addUnrelatedNode() {
       results.appendChild(new FixtureElement({ "data-unrelated": "" }));

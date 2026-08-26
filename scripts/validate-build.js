@@ -28,10 +28,20 @@ const requiredPaths = [
   manifest.background?.service_worker,
   manifest.side_panel?.default_path,
   "shared/messages.js",
+  "content/demoRuntime.js",
   "sidepanel/app.js",
   "demo/index.html",
   "demo/app.js"
 ];
+
+const demoAppPath = path.join(root, "demo/app.js");
+if (fs.existsSync(demoAppPath)) {
+  const demoApp = fs.readFileSync(demoAppPath, "utf8");
+  check(
+    demoApp.includes('../content/demoRuntime.js'),
+    "demo/app.js must import the local Demo Runtime"
+  );
+}
 
 const sidePanelHtmlPath = manifest.side_panel?.default_path;
 if (

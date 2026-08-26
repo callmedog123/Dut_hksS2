@@ -32,6 +32,7 @@ function createBuildFixture(t, hostPermissions) {
     "background/serviceWorker.js",
     "sidepanel/index.html",
     "shared/messages.js",
+    "content/demoRuntime.js",
     "sidepanel/app.js",
     "demo/index.html",
     "demo/app.js"
@@ -40,6 +41,11 @@ function createBuildFixture(t, hostPermissions) {
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, "", "utf8");
   }
+  writeFileSync(
+    path.join(root, "demo/app.js"),
+    'import "../content/demoRuntime.js";',
+    "utf8"
+  );
 
   return root;
 }

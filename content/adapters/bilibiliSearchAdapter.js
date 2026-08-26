@@ -1,6 +1,7 @@
 // @ts-check
 
 import { normalizeCandidateUrl } from "../../shared/url.js";
+import { createCandidateBindingRegistry } from "../candidateBinding.js";
 
 const RESULTS_ROOT_SELECTOR = ".video-list";
 const RESULT_CARD_SELECTOR = ".bili-video-card";
@@ -109,7 +110,9 @@ function readVideoIdentity(card, document) {
  *   document?: Document,
  *   MutationObserver?: typeof MutationObserver,
  *   now?: () => number,
- *   sessionIdFactory?: (contextKey: string) => string
+ *   sessionIdFactory?: (contextKey: string) => string,
+ *   onCandidateBound?: (binding: import("./types.js").CandidateBinding) => void,
+ *   onCandidateUnbound?: (binding: import("./types.js").CandidateBinding) => void
  * }} [options]
  * @returns {import("./types.js").SiteAdapter}
  */
@@ -120,6 +123,10 @@ export function createBilibiliSearchAdapter(options = {}) {
   const now = options.now ?? (() => Date.now());
   const sessionIdFactory =
     options.sessionIdFactory ?? (() => createDefaultSessionId());
+  const bindingRegistry = createCandidateBindingRegistry({
+    onBound: options.onCandidateBound,
+    onUnbound: options.onCandidateUnbound
+  });
   let sessionContextKey = "";
   let activeSessionId = "";
 
@@ -184,9 +191,9 @@ export function createBilibiliSearchAdapter(options = {}) {
 
   /**
    * @param {Document} document
-   * @returns {import("./types.js").Candidate[]}
+   * @returns {import("./types.js").CandidateBinding[]}
    */
-  function extractCandidates(document) {
+  function scanCandidateBindings(document) {
     const sessionId = getSessionId(document);
     if (!sessionId) {
       return [];
@@ -205,7 +212,7 @@ export function createBilibiliSearchAdapter(options = {}) {
 
     const seenIds = new Set();
     const seenUrls = new Set();
-    const candidates = [];
+    const bindings = [];
 
     resultCards.forEach((card, index) => {
       try {
@@ -226,20 +233,31 @@ export function createBilibiliSearchAdapter(options = {}) {
 
         seenIds.add(identity.id);
         seenUrls.add(identity.url);
-        candidates.push({
+        const candidate = {
           id: identity.id,
           url: identity.url,
           title,
           source: SOURCE,
           rank: index + 1,
           sessionId
-        });
+        };
+        bindings.push({ candidate, element: card });
       } catch {
         // A malformed or partially rendered card must not stop the page scan.
       }
     });
 
-    return candidates;
+    return bindings;
+  }
+
+  /**
+   * @param {Document} document
+   * @returns {import("./types.js").Candidate[]}
+   */
+  function extractCandidates(document) {
+    const bindings = scanCandidateBindings(document);
+    bindingRegistry.sync(bindings);
+    return bindings.map((binding) => binding.candidate);
   }
 
   /**
@@ -256,6 +274,7 @@ export function createBilibiliSearchAdapter(options = {}) {
       adapterDocument?.body ??
       adapterDocument?.querySelector?.(RESULTS_ROOT_SELECTOR);
     if (observerTarget === null || observerTarget === undefined) {
+      bindingRegistry.clear();
       return () => {};
     }
     if (typeof MutationObserverConstructor !== "function") {
@@ -315,6 +334,7 @@ export function createBilibiliSearchAdapter(options = {}) {
 
       disposed = true;
       observer.disconnect();
+      bindingRegistry.clear();
     };
   }
 

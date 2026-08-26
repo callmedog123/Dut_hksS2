@@ -239,6 +239,7 @@ export function createBilibiliDocumentFixture({
       state.resultsRoot.appendChild(result.card);
       state.cards.push(result.card);
       state.clickTargets.push(result.titleElement);
+      return result.card;
     },
     addUnrelatedNode() {
       state.resultsRoot.appendChild(new FixtureElement("aside"));
@@ -246,6 +247,15 @@ export function createBilibiliDocumentFixture({
     navigate(url, nextCandidates = []) {
       document.location.href = url;
       replaceResults(nextCandidates);
+    },
+    replaceCandidates(nextCandidates) {
+      replaceResults(nextCandidates);
+    },
+    removeCandidate(index) {
+      const [removed] = state.cards.splice(index, 1);
+      state.clickTargets.splice(index, 1);
+      state.resultsRoot.replaceChildren(...state.cards);
+      return removed ?? null;
     }
   };
 }

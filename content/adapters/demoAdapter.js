@@ -1,6 +1,7 @@
 // @ts-check
 
 import { normalizeCandidateUrl } from "../../shared/url.js";
+import { createCandidateBindingRegistry } from "../candidateBinding.js";
 
 const DEMO_PAGE_SELECTOR = "[data-demo-search-page]";
 const RESULTS_SELECTOR = "[data-demo-results]";
@@ -36,7 +37,9 @@ function findDemoPage(document) {
 /**
  * @param {{
  *   document?: Document,
- *   MutationObserver?: typeof MutationObserver
+ *   MutationObserver?: typeof MutationObserver,
+ *   onCandidateBound?: (binding: import("./types.js").CandidateBinding) => void,
+ *   onCandidateUnbound?: (binding: import("./types.js").CandidateBinding) => void
  * }} [options]
  * @returns {import("./types.js").SiteAdapter}
  */
@@ -44,6 +47,10 @@ export function createDemoAdapter(options = {}) {
   const adapterDocument = options.document ?? globalThis.document;
   const MutationObserverConstructor =
     options.MutationObserver ?? globalThis.MutationObserver;
+  const bindingRegistry = createCandidateBindingRegistry({
+    onBound: options.onCandidateBound,
+    onUnbound: options.onCandidateUnbound
+  });
 
   /**
    * @param {URL} url
@@ -92,9 +99,9 @@ export function createDemoAdapter(options = {}) {
 
   /**
    * @param {Document} document
-   * @returns {import("./types.js").Candidate[]}
+   * @returns {import("./types.js").CandidateBinding[]}
    */
-  function extractCandidates(document) {
+  function scanCandidateBindings(document) {
     const page = findDemoPage(document);
     const resultsRoot = document.querySelector(RESULTS_SELECTOR);
     if (page === null || resultsRoot === null) {
@@ -109,7 +116,7 @@ export function createDemoAdapter(options = {}) {
 
     const seenIds = new Set();
     const seenUrls = new Set();
-    const candidates = [];
+    const bindings = [];
     const resultNodes = [...resultsRoot.querySelectorAll(RESULT_SELECTOR)];
 
     resultNodes.forEach((resultNode, index) => {
@@ -128,17 +135,28 @@ export function createDemoAdapter(options = {}) {
 
       seenIds.add(id);
       seenUrls.add(url);
-      candidates.push({
+      const candidate = {
         id,
         url,
         title,
         source,
         rank: index + 1,
         sessionId
-      });
+      };
+      bindings.push({ candidate, element: resultNode });
     });
 
-    return candidates;
+    return bindings;
+  }
+
+  /**
+   * @param {Document} document
+   * @returns {import("./types.js").Candidate[]}
+   */
+  function extractCandidates(document) {
+    const bindings = scanCandidateBindings(document);
+    bindingRegistry.sync(bindings);
+    return bindings.map((binding) => binding.candidate);
   }
 
   /**
@@ -152,6 +170,7 @@ export function createDemoAdapter(options = {}) {
 
     const resultsRoot = adapterDocument?.querySelector(RESULTS_SELECTOR);
     if (resultsRoot === null || resultsRoot === undefined) {
+      bindingRegistry.clear();
       return () => {};
     }
 
@@ -197,6 +216,7 @@ export function createDemoAdapter(options = {}) {
 
       disposed = true;
       observer.disconnect();
+      bindingRegistry.clear();
     };
   }
 

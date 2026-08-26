@@ -4,6 +4,15 @@
 /** @typedef {import("../../shared/types.js").SearchContextV1} SearchContext */
 
 /**
+ * Page-memory-only association between a shared Candidate and its card.
+ * Element must never be serialized into messages or Repository records.
+ *
+ * @typedef {object} CandidateBinding
+ * @property {Candidate} candidate
+ * @property {Element} element
+ */
+
+/**
  * Site boundary for translating supported result pages into shared data.
  * Implementations own their DOM selectors; consumers only use this contract.
  *

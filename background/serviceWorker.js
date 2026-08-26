@@ -10,6 +10,7 @@ import {
 import { createIndexedDbStorageAdapter } from "../storage/indexedDbStorageAdapter.js";
 import { createRepository } from "../storage/repository.js";
 import { createMessageRouter } from "./messageRouter.js";
+import { createSessionFinalizeUseCase } from "./sessionFinalize.js";
 import { createSessionManager } from "./sessionManager.js";
 
 let repository;
@@ -28,13 +29,27 @@ function getSessionManager() {
   return sessionManager;
 }
 
+const sessionFinalizeUseCase = createSessionFinalizeUseCase({
+  finalizeSession(sessionId, finalizedAt) {
+    return getSessionManager().finalizeSession(sessionId, finalizedAt);
+  }
+});
+
 const messageRouter = createMessageRouter({
+  mergeDiscoveredCandidates(payload) {
+    return getRepository().mergeDiscoveredCandidates(payload);
+  },
+  mergeCandidateSignalsSnapshot(payload) {
+    return getRepository().mergeCandidateSignalsSnapshot(payload);
+  },
   listMissedPaths() {
     return getRepository().listMissedPaths();
   },
   listReencounters() {
     return getRepository().listReencounters();
   }
+}, {
+  sessionFinalizeUseCase
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -91,8 +106,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (
+    message?.type !== MESSAGE_TYPES.CANDIDATES_DISCOVERED &&
     message?.type !== MESSAGE_TYPES.MISSED_PATHS_QUERY &&
-    message?.type !== MESSAGE_TYPES.RE_ENCOUNTER_QUERY
+    message?.type !== MESSAGE_TYPES.RE_ENCOUNTER_QUERY &&
+    message?.type !== MESSAGE_TYPES.SESSION_FINALIZE &&
+    message?.type !== MESSAGE_TYPES.SIGNALS_UPDATED
   ) {
     return false;
   }

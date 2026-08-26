@@ -56,6 +56,16 @@ function createSession(overrides = {}) {
   };
 }
 
+function createDiscovery(candidates = [createCandidate()], overrides = {}) {
+  return {
+    sessionId: "session-1",
+    context: createContext(),
+    candidates,
+    discoveredAt: 200,
+    ...overrides
+  };
+}
+
 function createChosen(overrides = {}) {
   return {
     id: "chosen-1",
@@ -171,6 +181,370 @@ test("repeated writes are idempotent and updates replace one record", async () =
   });
   assert.equal(await repository.saveSession(updatedSession), true);
   assert.deepEqual(await repository.listSessions(), [updatedSession]);
+});
+
+test("atomically creates a discovered Session with zero-value signals", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const secondCandidate = createCandidate({
+    id: "candidate-2",
+    url: "https://example.com/result-2",
+    title: "Second result",
+    rank: 2
+  });
+
+  const result = await repository.mergeDiscoveredCandidates(
+    createDiscovery([createCandidate(), secondCandidate])
+  );
+
+  assert.deepEqual(result, {
+    sessionId: "session-1",
+    acceptedCandidateIds: ["candidate-1", "candidate-2"],
+    totalCandidateCount: 2,
+    updatedAt: 200
+  });
+  assert.deepEqual(await repository.getSession("session-1"), {
+    sessionId: "session-1",
+    context: createContext(),
+    candidates: [
+      {
+        candidate: createCandidate(),
+        signals: createSignals({
+          visibleMs: 0,
+          hoverMs: 0,
+          hoverCount: 0,
+          returnCount: 0
+        })
+      },
+      {
+        candidate: secondCandidate,
+        signals: createSignals({
+          candidateId: "candidate-2",
+          visibleMs: 0,
+          hoverMs: 0,
+          hoverCount: 0,
+          returnCount: 0
+        })
+      }
+    ],
+    updatedAt: 200
+  });
+});
+
+test("merges only new Candidates and preserves existing signals", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  await repository.mergeDiscoveredCandidates(createDiscovery());
+  await repository.saveSession(
+    createSession({
+      updatedAt: 250,
+      candidates: [
+        {
+          candidate: createCandidate(),
+          signals: createSignals({ visibleMs: 2_000, clicked: true })
+        }
+      ]
+    })
+  );
+
+  const duplicate = await repository.mergeDiscoveredCandidates(
+    createDiscovery(
+      [createCandidate({ rank: 99 })],
+      { discoveredAt: 300 }
+    )
+  );
+  assert.deepEqual(duplicate, {
+    sessionId: "session-1",
+    acceptedCandidateIds: [],
+    totalCandidateCount: 1,
+    updatedAt: 250
+  });
+
+  const secondCandidate = createCandidate({
+    id: "candidate-2",
+    url: "https://example.com/result-2",
+    title: "Second result",
+    rank: 2
+  });
+  const merged = await repository.mergeDiscoveredCandidates(
+    createDiscovery([secondCandidate], { discoveredAt: 300 })
+  );
+  assert.deepEqual(merged.acceptedCandidateIds, ["candidate-2"]);
+  assert.equal(merged.totalCandidateCount, 2);
+  assert.equal(merged.updatedAt, 300);
+
+  const persisted = await repository.getSession("session-1");
+  assert.deepEqual(persisted.candidates[0], {
+    candidate: createCandidate(),
+    signals: createSignals({ visibleMs: 2_000, clicked: true })
+  });
+  assert.deepEqual(persisted.candidates[1].signals, {
+    candidateId: "candidate-2",
+    sessionId: "session-1",
+    visibleMs: 0,
+    hoverMs: 0,
+    hoverCount: 0,
+    returnCount: 0,
+    clicked: false
+  });
+});
+
+test("rejects discovery identity, context, URL, and finalized conflicts", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.mergeDiscoveredCandidates(createDiscovery());
+
+  await assert.rejects(
+    () =>
+      repository.mergeDiscoveredCandidates(
+        createDiscovery([createCandidate()], { context: createContext(101) })
+      ),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      /SearchContext conflicts/u.test(error.message)
+  );
+  await assert.rejects(
+    () =>
+      repository.mergeDiscoveredCandidates(
+        createDiscovery([
+          createCandidate({ title: "Conflicting title" })
+        ])
+      ),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      /identity conflicts/u.test(error.message)
+  );
+  await assert.rejects(
+    () =>
+      repository.mergeDiscoveredCandidates(
+        createDiscovery([
+          createCandidate({
+            id: "candidate-2",
+            title: "Conflicting URL",
+            rank: 2
+          })
+        ])
+      ),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      /URL conflicts/u.test(error.message)
+  );
+
+  await repository.finalizeSessionAtomically({
+    sessionId: "session-1",
+    finalizedAt: 500,
+    chosen: [],
+    missedPaths: []
+  });
+  await assert.rejects(
+    () =>
+      repository.mergeDiscoveredCandidates(
+        createDiscovery([
+          createCandidate({
+            id: "candidate-2",
+            url: "https://example.com/result-2",
+            title: "Second result",
+            rank: 2
+          })
+        ])
+      ),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      /finalized session/u.test(error.message)
+  );
+});
+
+test("failed Candidate discovery commit leaves no partial Session", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  await repository.getSchemaVersion();
+  adapter.failNextCommit(new Error("simulated discovery failure"));
+
+  await assert.rejects(() =>
+    repository.mergeDiscoveredCandidates(
+      createDiscovery([
+        createCandidate(),
+        createCandidate({
+          id: "candidate-2",
+          url: "https://example.com/result-2",
+          title: "Second result",
+          rank: 2
+        })
+      ])
+    )
+  );
+  assert.equal(await repository.getSession("session-1"), null);
+});
+
+test("atomically merges absolute signals with fieldwise maxima", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  await repository.saveSession(createSession());
+  const commitsBeforeUpdate = adapter.commitCount;
+
+  const first = await repository.mergeCandidateSignalsSnapshot({
+    signals: createSignals({
+      visibleMs: 2_000,
+      hoverMs: 100,
+      hoverCount: 5,
+      returnCount: 0,
+      clicked: true
+    }),
+    updatedAt: 500
+  });
+  assert.deepEqual(first, {
+    sessionId: "session-1",
+    candidateId: "candidate-1",
+    updatedAt: 500,
+    changed: true
+  });
+  assert.equal(adapter.commitCount, commitsBeforeUpdate + 1);
+  assert.deepEqual(
+    (await repository.getSession("session-1")).candidates[0].signals,
+    createSignals({
+      visibleMs: 2_000,
+      hoverMs: 200,
+      hoverCount: 5,
+      returnCount: 1,
+      clicked: true
+    })
+  );
+
+  const commitsBeforeExactRetry = adapter.commitCount;
+  const exactRetry = await repository.mergeCandidateSignalsSnapshot({
+    signals: createSignals({
+      visibleMs: 2_000,
+      hoverMs: 100,
+      hoverCount: 5,
+      returnCount: 0,
+      clicked: true
+    }),
+    updatedAt: 500
+  });
+  assert.equal(exactRetry.changed, false);
+  assert.equal(adapter.commitCount, commitsBeforeExactRetry);
+
+  const late = await repository.mergeCandidateSignalsSnapshot({
+    signals: createSignals({
+      visibleMs: 3_000,
+      hoverMs: 150,
+      hoverCount: 4,
+      returnCount: 1,
+      clicked: false
+    }),
+    updatedAt: 300
+  });
+  assert.deepEqual(late, {
+    sessionId: "session-1",
+    candidateId: "candidate-1",
+    updatedAt: 500,
+    changed: true
+  });
+  assert.deepEqual(
+    (await repository.getSession("session-1")).candidates[0].signals,
+    createSignals({
+      visibleMs: 3_000,
+      hoverMs: 200,
+      hoverCount: 5,
+      returnCount: 1,
+      clicked: true
+    })
+  );
+
+  const commitsBeforeRepeat = adapter.commitCount;
+  const repeated = await repository.mergeCandidateSignalsSnapshot({
+    signals: createSignals({
+      visibleMs: 3_000,
+      hoverMs: 100,
+      hoverCount: 2,
+      returnCount: 0,
+      clicked: false
+    }),
+    updatedAt: 250
+  });
+  assert.deepEqual(repeated, {
+    sessionId: "session-1",
+    candidateId: "candidate-1",
+    updatedAt: 500,
+    changed: false
+  });
+  assert.equal(adapter.commitCount, commitsBeforeRepeat);
+});
+
+test("rejects invalid, missing, mismatched, and finalized signal targets", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.saveSession(createSession());
+
+  await assert.rejects(
+    () =>
+      repository.mergeCandidateSignalsSnapshot({
+        signals: { ...createSignals(), hoverCount: -1 },
+        updatedAt: 300
+      }),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      /Invalid Candidate signals snapshot/u.test(error.message)
+  );
+  await assert.rejects(
+    () =>
+      repository.mergeCandidateSignalsSnapshot({
+        signals: createSignals({ sessionId: "missing-session" }),
+        updatedAt: 300
+      }),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      /Session not found/u.test(error.message)
+  );
+  await assert.rejects(
+    () =>
+      repository.mergeCandidateSignalsSnapshot({
+        signals: createSignals({ candidateId: "candidate-other" }),
+        updatedAt: 300
+      }),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      /not part of session/u.test(error.message)
+  );
+
+  await repository.finalizeSessionAtomically({
+    sessionId: "session-1",
+    finalizedAt: 500,
+    chosen: [],
+    missedPaths: []
+  });
+  await assert.rejects(
+    () =>
+      repository.mergeCandidateSignalsSnapshot({
+        signals: createSignals(),
+        updatedAt: 600
+      }),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      /Cannot update finalized session/u.test(error.message)
+  );
+});
+
+test("failed signals commit preserves the entire prior Session", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  const original = createSession();
+  await repository.saveSession(original);
+  const failure = new Error("simulated signals persistence failure");
+  adapter.failNextCommit(failure);
+
+  await assert.rejects(
+    () =>
+      repository.mergeCandidateSignalsSnapshot({
+        signals: createSignals({ visibleMs: 9_000, clicked: true }),
+        updatedAt: 500
+      }),
+    (error) => error === failure
+  );
+  assert.deepEqual(await repository.getSession("session-1"), original);
 });
 
 test("atomically persists a chosen flag without changing aggregate signals", async () => {
