@@ -33,6 +33,20 @@ const requiredPaths = [
   "demo/app.js"
 ];
 
+const sidePanelHtmlPath = manifest.side_panel?.default_path;
+if (
+  typeof sidePanelHtmlPath === "string" &&
+  fs.existsSync(path.join(root, sidePanelHtmlPath))
+) {
+  const sidePanelHtml = fs.readFileSync(
+    path.join(root, sidePanelHtmlPath),
+    "utf8"
+  );
+  if (sidePanelHtml.includes("styles.css")) {
+    requiredPaths.push("sidepanel/styles.css");
+  }
+}
+
 for (const requiredPath of requiredPaths) {
   check(
     typeof requiredPath === "string" &&

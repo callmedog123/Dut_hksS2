@@ -4,20 +4,55 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>The Unclicked（余路）</title>
+    <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <main>
-      <h1>The Unclicked（余路）</h1>
-      <p>Manifest V3 最小骨架。当前仅验证 Side Panel 与后台消息连接。</p>
+    <div class="panel">
+      <header class="panel-header">
+        <h1 class="panel-title">The Unclicked</h1>
+        <p class="panel-subtitle">余路 · 记住那些差一点选择的路径</p>
+        <p class="panel-note">本地 Missed Path</p>
+      </header>
 
-      <button id="ping-button" type="button">Ping Service Worker</button>
-      <p id="status" role="status" aria-live="polite">尚未发送 PING。</p>
-      <pre id="response">等待响应</pre>
+      <section class="session" aria-labelledby="summary-title">
+        <h2 class="section-title" id="summary-title">考虑过但未选择</h2>
+        <p class="session-topic">数据由扩展后台从本地 Repository 提供</p>
+        <ul class="session-stats">
+          <li>
+            <span class="stat-value" id="missed-count">0</span>
+            <span class="stat-label">当前记录</span>
+          </li>
+        </ul>
+      </section>
 
-      <p>
-        <a href="../demo/index.html" target="_blank" rel="noreferrer">打开本地 Demo</a>
+      <p
+        class="status"
+        id="status"
+        data-state="loading"
+        role="status"
+        aria-live="polite"
+      >
+        正在读取本地 Missed Path…
       </p>
-    </main>
+
+      <main
+        class="card-list"
+        id="card-list"
+        aria-label="Missed Path 列表"
+        aria-busy="true"
+      ></main>
+
+      <p class="empty" id="empty-state" hidden>
+        目前没有考虑过但未选择的候选。
+      </p>
+
+      <footer class="panel-footer">
+        <p class="footer-note">打开、忽略和删除操作将在共享协议就绪后启用。</p>
+        <button type="button" class="btn btn-quiet" id="retry-button" hidden>
+          重新加载
+        </button>
+      </footer>
+    </div>
 
     <script type="module" src="./app.js"></script>
   </body>
