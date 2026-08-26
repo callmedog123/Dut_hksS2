@@ -1,24 +1,41 @@
 // @ts-check
 
 import {
+  REENCOUNTER_FEEDBACK_OUTCOMES,
   SCHEMA_VERSION,
   isCandidateSignalsV1,
   isCandidateV1,
+  isMissedPathV1,
+  isReencounterFeedbackV1,
+  isReencounterRecordV1,
+  isRankedReencounterV1,
   isSearchContextV1
 } from "./types.js";
 import { normalizeCandidateUrl } from "./url.js";
 
-export { SCHEMA_VERSION, SCHEMA_VERSION as MESSAGE_SCHEMA_VERSION };
+export {
+  REENCOUNTER_FEEDBACK_OUTCOMES,
+  SCHEMA_VERSION,
+  SCHEMA_VERSION as MESSAGE_SCHEMA_VERSION
+};
 
 export const MESSAGE_TYPES = Object.freeze({
+  ACTIVE_CONTEXT_QUERY: "ACTIVE_CONTEXT_QUERY",
   CANDIDATE_CHOSEN: "CANDIDATE_CHOSEN",
   CANDIDATES_DISCOVERED: "CANDIDATES_DISCOVERED",
   MISSED_PATHS_QUERY: "MISSED_PATHS_QUERY",
   PING: "PING",
   PONG: "PONG",
   RE_ENCOUNTER_QUERY: "RE_ENCOUNTER_QUERY",
+  RE_ENCOUNTER_FEEDBACK: "RE_ENCOUNTER_FEEDBACK",
+  RE_ENCOUNTER_SHOWN: "RE_ENCOUNTER_SHOWN",
   SESSION_FINALIZE: "SESSION_FINALIZE",
   SIGNALS_UPDATED: "SIGNALS_UPDATED"
+});
+
+export const ACTIVE_CONTEXT_STATUSES = Object.freeze({
+  AVAILABLE: "AVAILABLE",
+  UNAVAILABLE: "UNAVAILABLE"
 });
 
 export const RESPONSE_ERROR_CODES = Object.freeze({
@@ -26,6 +43,13 @@ export const RESPONSE_ERROR_CODES = Object.freeze({
   CANDIDATE_DISCOVERY_FAILED: "CANDIDATE_DISCOVERY_FAILED",
   INVALID_REQUEST: "INVALID_REQUEST",
   REENCOUNTER_QUERY_FAILED: "REENCOUNTER_QUERY_FAILED",
+  REENCOUNTER_FEEDBACK_CONFLICT: "REENCOUNTER_FEEDBACK_CONFLICT",
+  REENCOUNTER_FEEDBACK_FAILED: "REENCOUNTER_FEEDBACK_FAILED",
+  REENCOUNTER_NOT_FOUND: "REENCOUNTER_NOT_FOUND",
+  REENCOUNTER_SHOWN_CONFLICT: "REENCOUNTER_SHOWN_CONFLICT",
+  REENCOUNTER_SHOWN_FAILED: "REENCOUNTER_SHOWN_FAILED",
+  REENCOUNTER_SHOWN_STALE: "REENCOUNTER_SHOWN_STALE",
+  MISSED_PATH_NOT_FOUND: "MISSED_PATH_NOT_FOUND",
   SCHEMA_VERSION_UNSUPPORTED: "SCHEMA_VERSION_UNSUPPORTED",
   SESSION_FINALIZE_CONFLICT: "SESSION_FINALIZE_CONFLICT",
   SESSION_FINALIZE_FAILED: "SESSION_FINALIZE_FAILED",
@@ -54,6 +78,33 @@ export const RESPONSE_ERROR_CODES = Object.freeze({
  *   receivedSentAt: number,
  *   respondedAt: number
  * }} payload
+ */
+
+/**
+ * One rendered Re-encounter card. The payload is the exact durable
+ * ReencounterRecordV1 shape before any optional feedback outcome exists.
+ *
+ * @typedef {object} ReencounterShownMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.RE_ENCOUNTER_SHOWN} type
+ * @property {string} requestId
+ * @property {import("./types.js").ReencounterRecordV1} payload
+ */
+
+/**
+ * @typedef {object} ReencounterFeedbackMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.RE_ENCOUNTER_FEEDBACK} type
+ * @property {string} requestId
+ * @property {import("./types.js").ReencounterFeedbackV1} payload
+ */
+
+/**
+ * @typedef {object} ActiveContextQueryMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY} type
+ * @property {string} requestId
+ * @property {Record<string, never>} payload
  */
 
 /**
@@ -171,6 +222,18 @@ const SESSION_FINALIZE_PAYLOAD_KEYS = Object.freeze([
 const REENCOUNTER_QUERY_PAYLOAD_KEYS = Object.freeze([
   "context",
   "limit"
+]);
+const REENCOUNTER_SHOWN_RESPONSE_KEYS = Object.freeze([
+  "reencounterId",
+  "missedPathId",
+  "shownAt",
+  "created"
+]);
+const REENCOUNTER_FEEDBACK_RESPONSE_KEYS = Object.freeze([
+  "reencounterId",
+  "outcome",
+  "feedbackAt",
+  "updated"
 ]);
 const SUCCESS_RESPONSE_KEYS = Object.freeze([
   "schemaVersion",
@@ -568,6 +631,37 @@ export function isSessionFinalizeMessage(message) {
 
 /**
  * @param {string} [requestId]
+ * @returns {ActiveContextQueryMessageV1}
+ */
+export function createActiveContextQueryMessage(
+  requestId = createRequestId()
+) {
+  requireRequestId(requestId, "ACTIVE_CONTEXT_QUERY");
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY,
+    requestId,
+    payload: {}
+  };
+  if (!isActiveContextQueryMessage(message)) {
+    throw new TypeError("Failed to create a valid ACTIVE_CONTEXT_QUERY message.");
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is ActiveContextQueryMessageV1}
+ */
+export function isActiveContextQueryMessage(message) {
+  return Boolean(
+    hasValidEnvelope(message, MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY) &&
+      hasExactKeys(message.payload, [])
+  );
+}
+
+/**
+ * @param {string} [requestId]
  * @returns {MissedPathsQueryMessageV1}
  */
 export function createMissedPathsQueryMessage(requestId = createRequestId()) {
@@ -794,9 +888,146 @@ export function isSessionFinalizeResponse(message) {
   );
 }
 
+function createReencounterShownId(missedPathId, triggerContext, shownAt) {
+  const contextIdentity = JSON.stringify([
+    triggerContext.query,
+    triggerContext.source,
+    triggerContext.timestamp,
+    triggerContext.keywords ?? []
+  ]);
+  return `shown:${encodeURIComponent(missedPathId)}:${shownAt}:${encodeURIComponent(contextIdentity)}`;
+}
+
 /**
- * Validate the query-specific response data without duplicating Repository DTO
- * validation. Repository remains the authority for each MissedPath record.
+ * @param {string} reencounterId
+ * @param {import("./types.js").ReencounterFeedbackOutcomeV1} outcome
+ * @param {number} [feedbackAt]
+ * @param {string} [requestId]
+ * @returns {ReencounterFeedbackMessageV1}
+ */
+export function createReencounterFeedbackMessage(
+  reencounterId,
+  outcome,
+  feedbackAt = Date.now(),
+  requestId = createRequestId()
+) {
+  requireRequestId(requestId, "RE_ENCOUNTER_FEEDBACK");
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.RE_ENCOUNTER_FEEDBACK,
+    requestId,
+    payload: { reencounterId, outcome, feedbackAt }
+  };
+  if (!isReencounterFeedbackMessage(message)) {
+    throw new TypeError(
+      "Failed to create a valid RE_ENCOUNTER_FEEDBACK message."
+    );
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is ReencounterFeedbackMessageV1}
+ */
+export function isReencounterFeedbackMessage(message) {
+  return Boolean(
+    hasValidEnvelope(message, MESSAGE_TYPES.RE_ENCOUNTER_FEEDBACK) &&
+      isReencounterFeedbackV1(message.payload)
+  );
+}
+
+/**
+ * Create a durable shown record only after the caller has rendered the ranked
+ * result. Reusing the same inputs produces the same record identity.
+ *
+ * @param {import("./types.js").RankedReencounterV1} rankedReencounter
+ * @param {import("./types.js").SearchContextV1} triggerContext
+ * @param {number} [shownAt]
+ * @param {string} [requestId]
+ * @returns {ReencounterShownMessageV1}
+ */
+export function createReencounterShownMessage(
+  rankedReencounter,
+  triggerContext,
+  shownAt = Date.now(),
+  requestId = createRequestId()
+) {
+  requireRequestId(requestId, "RE_ENCOUNTER_SHOWN");
+  if (!isRankedReencounterV1(rankedReencounter)) {
+    throw new TypeError("RE_ENCOUNTER_SHOWN requires RankedReencounterV1.");
+  }
+  if (!isSearchContextV1(triggerContext)) {
+    throw new TypeError("RE_ENCOUNTER_SHOWN requires SearchContextV1.");
+  }
+  if (!isFiniteNumber(shownAt) || shownAt < 0) {
+    throw new TypeError("RE_ENCOUNTER_SHOWN shownAt must be non-negative and finite.");
+  }
+
+  const payload = {
+    id: createReencounterShownId(
+      rankedReencounter.missedPath.id,
+      triggerContext,
+      shownAt
+    ),
+    missedPathId: rankedReencounter.missedPath.id,
+    triggerContext,
+    score: rankedReencounter.score,
+    reasons: rankedReencounter.reasons,
+    shownAt
+  };
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.RE_ENCOUNTER_SHOWN,
+    requestId,
+    payload
+  };
+  if (!isReencounterShownMessage(message)) {
+    throw new TypeError("Failed to create a valid RE_ENCOUNTER_SHOWN message.");
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is ReencounterShownMessageV1}
+ */
+export function isReencounterShownMessage(message) {
+  return Boolean(
+    hasValidEnvelope(message, MESSAGE_TYPES.RE_ENCOUNTER_SHOWN) &&
+      isReencounterRecordV1(message.payload) &&
+      !Object.hasOwn(message.payload, "outcome")
+  );
+}
+
+/**
+ * Validate the discriminated ACTIVE_CONTEXT_QUERY success result. A missing
+ * current context is a successful UNAVAILABLE state, not an error.
+ *
+ * @param {unknown} message
+ * @returns {boolean}
+ */
+export function isActiveContextQueryResponse(message) {
+  if (!isResponseMessage(message)) {
+    return false;
+  }
+  if (message.ok === false) {
+    return true;
+  }
+  if (!hasExactKeys(message.data, ["status", "context"])) {
+    return false;
+  }
+  if (message.data.status === ACTIVE_CONTEXT_STATUSES.UNAVAILABLE) {
+    return message.data.context === null;
+  }
+  return Boolean(
+    message.data.status === ACTIVE_CONTEXT_STATUSES.AVAILABLE &&
+      isSearchContextV1(message.data.context)
+  );
+}
+
+/**
+ * Validate the query-specific response against the shared MissedPathV1 DTO.
  *
  * @param {unknown} message
  * @returns {boolean}
@@ -810,7 +1041,8 @@ export function isMissedPathsQueryResponse(message) {
   }
   return Boolean(
     hasExactKeys(message.data, ["missedPaths"]) &&
-      Array.isArray(message.data.missedPaths)
+      Array.isArray(message.data.missedPaths) &&
+      message.data.missedPaths.every(isMissedPathV1)
   );
 }
 
@@ -827,6 +1059,51 @@ export function isReencounterQueryResponse(message) {
   }
   return Boolean(
     hasExactKeys(message.data, ["reencounters"]) &&
-      Array.isArray(message.data.reencounters)
+      Array.isArray(message.data.reencounters) &&
+      message.data.reencounters.every(isRankedReencounterV1)
+  );
+}
+
+/**
+ * @param {unknown} message
+ * @returns {boolean}
+ */
+export function isReencounterShownResponse(message) {
+  if (!isResponseMessage(message)) {
+    return false;
+  }
+  if (message.ok === false) {
+    return true;
+  }
+  return Boolean(
+    hasExactKeys(message.data, REENCOUNTER_SHOWN_RESPONSE_KEYS) &&
+      isNonEmptyString(message.data.reencounterId) &&
+      isNonEmptyString(message.data.missedPathId) &&
+      isFiniteNumber(message.data.shownAt) &&
+      message.data.shownAt >= 0 &&
+      typeof message.data.created === "boolean"
+  );
+}
+
+/**
+ * @param {unknown} message
+ * @returns {boolean}
+ */
+export function isReencounterFeedbackResponse(message) {
+  if (!isResponseMessage(message)) {
+    return false;
+  }
+  if (message.ok === false) {
+    return true;
+  }
+  return Boolean(
+    hasExactKeys(message.data, REENCOUNTER_FEEDBACK_RESPONSE_KEYS) &&
+      isNonEmptyString(message.data.reencounterId) &&
+      Object.values(REENCOUNTER_FEEDBACK_OUTCOMES).includes(
+        message.data.outcome
+      ) &&
+      isFiniteNumber(message.data.feedbackAt) &&
+      message.data.feedbackAt >= 0 &&
+      typeof message.data.updated === "boolean"
   );
 }

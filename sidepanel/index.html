@@ -14,6 +14,56 @@
         <p class="panel-note">本地 Missed Path</p>
       </header>
 
+      <section class="session contextual-session" aria-labelledby="reencounter-title">
+        <h2 class="section-title" id="reencounter-title">情境化重逢</h2>
+        <p class="session-topic" id="active-context-summary">
+          等待 B 线提供当前搜索情境
+        </p>
+        <p
+          class="status contextual-status"
+          id="active-context-status"
+          data-state="loading"
+          role="status"
+          aria-live="polite"
+        >
+          正在确认当前搜索情境…
+        </p>
+        <button
+          type="button"
+          class="btn btn-quiet contextual-retry"
+          id="active-context-retry-button"
+          hidden
+        >
+          重新确认情境
+        </button>
+
+        <p
+          class="status contextual-status"
+          id="reencounter-status"
+          data-state="inactive"
+          role="status"
+          aria-live="polite"
+          hidden
+        ></p>
+        <div
+          class="card-list reencounter-list"
+          id="reencounter-list"
+          aria-label="情境化重逢列表"
+          aria-busy="false"
+        ></div>
+        <p class="empty" id="reencounter-empty-state" hidden>
+          当前情境下没有需要重逢的余路。
+        </p>
+        <button
+          type="button"
+          class="btn btn-quiet contextual-retry"
+          id="reencounter-retry-button"
+          hidden
+        >
+          重新查找
+        </button>
+      </section>
+
       <section class="session" aria-labelledby="summary-title">
         <h2 class="section-title" id="summary-title">考虑过但未选择</h2>
         <p class="session-topic">数据由扩展后台从本地 Repository 提供</p>
@@ -47,7 +97,9 @@
       </p>
 
       <footer class="panel-footer">
-        <p class="footer-note">打开、忽略和删除操作将在共享协议就绪后启用。</p>
+        <p class="footer-note">
+          重逢反馈、打开、稍后、不相关和删除操作尚未启用。
+        </p>
         <button type="button" class="btn btn-quiet" id="retry-button" hidden>
           重新加载
         </button>

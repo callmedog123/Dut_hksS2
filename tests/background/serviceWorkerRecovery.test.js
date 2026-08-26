@@ -3,11 +3,15 @@ import test from "node:test";
 
 import { createSessionManager } from "../../background/sessionManager.js";
 import {
+  ACTIVE_CONTEXT_STATUSES,
+  createActiveContextQueryMessage,
   createCandidateChosenMessage,
   createCandidatesDiscoveredMessage,
   createReencounterQueryMessage,
+  createReencounterShownMessage,
   createSessionFinalizeMessage,
-  createSignalsUpdatedMessage
+  createSignalsUpdatedMessage,
+  isActiveContextQueryResponse
 } from "../../shared/messages.js";
 import { createIndexedDbStorageAdapter } from "../../storage/indexedDbStorageAdapter.js";
 import { createRepository } from "../../storage/repository.js";
@@ -209,6 +213,87 @@ test("CANDIDATES_DISCOVERED merges persisted Sessions after Worker restart", asy
       hoverCount: 0,
       returnCount: 0,
       clicked: false
+    });
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
+test("ACTIVE_CONTEXT_QUERY restores and switches context after Worker restart", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+
+  try {
+    const firstWorker = await loadServiceWorker("active-context-first");
+    const unavailable = await dispatchAsync(
+      firstWorker,
+      createActiveContextQueryMessage("request-active-empty")
+    );
+    assert.deepEqual(unavailable.data, {
+      status: ACTIVE_CONTEXT_STATUSES.UNAVAILABLE,
+      context: null
+    });
+
+    await dispatchAsync(
+      firstWorker,
+      createCandidatesDiscoveredMessage(
+        "session-1",
+        createContext(),
+        [createCandidate()],
+        200,
+        "request-active-discovery-first"
+      )
+    );
+
+    const restartedWorker = await loadServiceWorker(
+      "active-context-restarted"
+    );
+    const restored = await dispatchAsync(
+      restartedWorker,
+      createActiveContextQueryMessage("request-active-restored")
+    );
+    assert.equal(isActiveContextQueryResponse(restored), true);
+    assert.equal(restored.requestId, "request-active-restored");
+    assert.deepEqual(restored.data, {
+      status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+      context: createContext()
+    });
+
+    const switchedContext = {
+      query: "world models",
+      source: "local-demo",
+      timestamp: 300,
+      keywords: ["world", "models"]
+    };
+    await dispatchAsync(
+      restartedWorker,
+      createCandidatesDiscoveredMessage(
+        "session-2",
+        switchedContext,
+        [
+          createCandidate({
+            id: "candidate-2",
+            url: "https://example.com/world-models",
+            title: "World models",
+            sessionId: "session-2"
+          })
+        ],
+        300,
+        "request-active-discovery-switch"
+      )
+    );
+
+    const secondRestart = await loadServiceWorker(
+      "active-context-second-restart"
+    );
+    const switched = await dispatchAsync(
+      secondRestart,
+      createActiveContextQueryMessage("request-active-switched")
+    );
+    assert.deepEqual(switched.data, {
+      status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+      context: switchedContext
     });
   } finally {
     delete globalThis.chrome;
@@ -439,17 +524,33 @@ test("persisted Re-encounter cooldown remains active after Worker restart", asyn
     const repository = createRepository(
       createIndexedDbStorageAdapter({ indexedDB })
     );
+    const context = createContext(NOW);
     await repository.saveMissedPath(createMissedPath());
-    await repository.saveReencounter(createReencounter());
-    const request = createReencounterQueryMessage(
-      createContext(NOW),
-      3,
-      "request-cooldown-first"
-    );
-
+    await repository.mergeDiscoveredCandidates({
+      sessionId: "session-1",
+      context,
+      candidates: [createCandidate()],
+      discoveredAt: NOW
+    });
     const firstWorker = await loadServiceWorker("cooldown-first");
-    const firstResponse = await dispatchAsync(firstWorker, request);
-    assert.deepEqual(firstResponse.data, { reencounters: [] });
+    const firstResponse = await dispatchAsync(
+      firstWorker,
+      createReencounterQueryMessage(
+        context,
+        3,
+        "request-cooldown-first"
+      )
+    );
+    assert.equal(firstResponse.data.reencounters.length, 1);
+    const shownRequest = createReencounterShownMessage(
+      firstResponse.data.reencounters[0],
+      context,
+      NOW,
+      "request-shown-first"
+    );
+    const shownResponse = await dispatchAsync(firstWorker, shownRequest);
+    assert.equal(shownResponse.requestId, shownRequest.requestId);
+    assert.equal(shownResponse.data.created, true);
 
     const restartedWorker = await loadServiceWorker("cooldown-restarted");
     const restartedResponse = await dispatchAsync(
@@ -465,7 +566,12 @@ test("persisted Re-encounter cooldown remains active after Worker restart", asyn
     const restartedRepository = createRepository(
       createIndexedDbStorageAdapter({ indexedDB })
     );
-    assert.equal((await restartedRepository.listReencounters()).length, 1);
+    const restoredShown = await restartedRepository.listReencounters();
+    assert.equal(restoredShown.length, 1);
+    assert.equal(restoredShown[0].id, shownRequest.payload.id);
+    assert.equal(restoredShown[0].missedPathId, "missed-1");
+    assert.equal(restoredShown[0].shownAt, NOW);
+    assert.deepEqual(restoredShown[0].triggerContext, context);
   } finally {
     delete globalThis.chrome;
     delete globalThis.indexedDB;

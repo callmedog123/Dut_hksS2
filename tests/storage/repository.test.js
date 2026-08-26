@@ -160,6 +160,231 @@ test("initializes schemaVersion and provides CRUD for every minimal record", asy
   );
 });
 
+test("uses shared MissedPath and Re-encounter reason validators compatibly", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  const missedWithoutContribution = createMissedPath({
+    reasons: [
+      {
+        code: "NOT_CLICKED",
+        label: "The Candidate was not clicked."
+      }
+    ]
+  });
+  const reencounterWithPenalty = createReencounter({
+    reasons: [
+      {
+        code: "COOLDOWN_PENALTY",
+        label: "Cooldown reduced relevance.",
+        contribution: -0.25
+      }
+    ]
+  });
+
+  await repository.saveMissedPath(missedWithoutContribution);
+  await repository.saveReencounter(reencounterWithPenalty);
+
+  assert.deepEqual(
+    await repository.getMissedPath("missed-1"),
+    missedWithoutContribution
+  );
+  assert.deepEqual(
+    await repository.getReencounter("reencounter-1"),
+    reencounterWithPenalty
+  );
+});
+
+test("Repository rejects invalid shared MissedPath and Re-encounter reasons", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  const invalidMissedPaths = [
+    createMissedPath({ status: "UNKNOWN" }),
+    createMissedPath({ score: 1.1 }),
+    createMissedPath({
+      reasons: [{ code: "UNKNOWN", label: "Unknown." }]
+    }),
+    createMissedPath({ extra: true })
+  ];
+  for (const missedPath of invalidMissedPaths) {
+    await assert.rejects(
+      () => repository.saveMissedPath(missedPath),
+      RepositoryDataError
+    );
+  }
+
+  const invalidReencounters = [
+    createReencounter({
+      reasons: [{ code: "UNKNOWN", label: "Unknown." }]
+    }),
+    createReencounter({
+      reasons: [
+        {
+          code: "COOLDOWN_PENALTY",
+          label: "Invalid penalty.",
+          contribution: Number.NEGATIVE_INFINITY
+        }
+      ]
+    })
+  ];
+  for (const reencounter of invalidReencounters) {
+    await assert.rejects(
+      () => repository.saveReencounter(reencounter),
+      RepositoryDataError
+    );
+  }
+
+  assert.equal(adapter.commitCount, 0);
+});
+
+test("records Re-encounter shown once and keeps exact repeats idempotent", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  await repository.saveMissedPath(createMissedPath());
+  await repository.mergeDiscoveredCandidates(
+    createDiscovery([createCandidate()], {
+      context: createContext(400),
+      discoveredAt: 400
+    })
+  );
+  const shown = createReencounter({ id: "shown-1" });
+
+  assert.deepEqual(await repository.recordReencounterShown(shown), {
+    reencounterId: "shown-1",
+    missedPathId: "missed-1",
+    shownAt: 450,
+    created: true
+  });
+  const commitsAfterFirst = adapter.commitCount;
+  assert.deepEqual(await repository.recordReencounterShown(shown), {
+    reencounterId: "shown-1",
+    missedPathId: "missed-1",
+    shownAt: 450,
+    created: false
+  });
+  assert.equal(adapter.commitCount, commitsAfterFirst);
+  assert.deepEqual(await repository.listReencounters(), [shown]);
+});
+
+test("records the same Missed Path again in a different trigger context", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.saveMissedPath(createMissedPath());
+  await repository.mergeDiscoveredCandidates(
+    createDiscovery([createCandidate()], {
+      context: createContext(400),
+      discoveredAt: 400
+    })
+  );
+  const first = createReencounter({ id: "shown-context-1" });
+  const second = createReencounter({
+    id: "shown-context-2",
+    triggerContext: createContext(500),
+    shownAt: 550
+  });
+
+  assert.equal((await repository.recordReencounterShown(first)).created, true);
+  await repository.mergeDiscoveredCandidates(
+    createDiscovery(
+      [
+        createCandidate({
+          id: "candidate-2",
+          url: "https://example.com/result-2",
+          title: "Second result",
+          sessionId: "session-2"
+        })
+      ],
+      {
+        sessionId: "session-2",
+        context: createContext(500),
+        discoveredAt: 500
+      }
+    )
+  );
+  assert.equal((await repository.recordReencounterShown(second)).created, true);
+  assert.deepEqual(await repository.listReencounters(), [first, second]);
+});
+
+test("rejects unknown Missed Path and conflicting shown identity", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  const unknown = createReencounter({
+    id: "shown-unknown",
+    missedPathId: "missing"
+  });
+  await assert.rejects(
+    () => repository.recordReencounterShown(unknown),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      error.code === "MISSED_PATH_NOT_FOUND"
+  );
+
+  await repository.saveMissedPath(createMissedPath());
+  await repository.mergeDiscoveredCandidates(
+    createDiscovery([createCandidate()], {
+      context: createContext(400),
+      discoveredAt: 400
+    })
+  );
+  const shown = createReencounter({ id: "shown-conflict" });
+  await repository.recordReencounterShown(shown);
+  await assert.rejects(
+    () =>
+      repository.recordReencounterShown({
+        ...shown,
+        score: 0.9
+      }),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      error.code === "REENCOUNTER_SHOWN_CONFLICT"
+  );
+  assert.deepEqual(await repository.getReencounter(shown.id), shown);
+});
+
+test("rejects a shown record after the authoritative context changes", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.saveMissedPath(createMissedPath());
+  await repository.mergeDiscoveredCandidates(
+    createDiscovery([createCandidate()], {
+      context: createContext(500),
+      discoveredAt: 500
+    })
+  );
+
+  await assert.rejects(
+    () =>
+      repository.recordReencounterShown(
+        createReencounter({ id: "shown-stale" })
+      ),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      error.code === "REENCOUNTER_SHOWN_STALE"
+  );
+  assert.equal(await repository.getReencounter("shown-stale"), null);
+});
+
+test("shown storage failure rolls back without a partial record", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  await repository.saveMissedPath(createMissedPath());
+  await repository.mergeDiscoveredCandidates(
+    createDiscovery([createCandidate()], {
+      context: createContext(400),
+      discoveredAt: 400
+    })
+  );
+  const failure = new Error("shown commit failed");
+  adapter.failNextCommit(failure);
+
+  await assert.rejects(
+    () => repository.recordReencounterShown(createReencounter({ id: "shown-fail" })),
+    (error) => error === failure
+  );
+  assert.equal(await repository.getReencounter("shown-fail"), null);
+});
+
 test("repeated writes are idempotent and updates replace one record", async () => {
   const adapter = createTransactionalMemoryStorageAdapter();
   const repository = createRepository(adapter);
@@ -230,6 +455,70 @@ test("atomically creates a discovered Session with zero-value signals", async ()
     ],
     updatedAt: 200
   });
+  assert.deepEqual(await repository.getActiveContext(), {
+    sessionId: "session-1",
+    context: createContext(),
+    activatedAt: 200
+  });
+});
+
+test("switches and restores the one durable active context idempotently", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  await repository.mergeDiscoveredCandidates(createDiscovery());
+  const commitsAfterFirstDiscovery = adapter.commitCount;
+
+  await repository.mergeDiscoveredCandidates(
+    createDiscovery([createCandidate()], { discoveredAt: 300 })
+  );
+  assert.equal(adapter.commitCount, commitsAfterFirstDiscovery);
+
+  const nextContext = {
+    query: "world models",
+    source: "local-demo",
+    timestamp: 400,
+    keywords: ["world", "models"]
+  };
+  const nextCandidate = createCandidate({
+    id: "candidate-2",
+    url: "https://example.com/world-models",
+    title: "World models",
+    sessionId: "session-2"
+  });
+  await repository.mergeDiscoveredCandidates(
+    createDiscovery([nextCandidate], {
+      sessionId: "session-2",
+      context: nextContext,
+      discoveredAt: 400
+    })
+  );
+
+  const expectedActiveContext = {
+    sessionId: "session-2",
+    context: nextContext,
+    activatedAt: 400
+  };
+  assert.deepEqual(await repository.getActiveContext(), expectedActiveContext);
+  assert.deepEqual(
+    await createRepository(adapter).getActiveContext(),
+    expectedActiveContext
+  );
+
+  await repository.finalizeSessionAtomically({
+    sessionId: "session-1",
+    finalizedAt: 500,
+    chosen: [],
+    missedPaths: []
+  });
+  assert.deepEqual(await repository.getActiveContext(), expectedActiveContext);
+
+  await repository.finalizeSessionAtomically({
+    sessionId: "session-2",
+    finalizedAt: 600,
+    chosen: [],
+    missedPaths: []
+  });
+  assert.equal(await repository.getActiveContext(), null);
 });
 
 test("merges only new Candidates and preserves existing signals", async () => {
@@ -376,6 +665,7 @@ test("failed Candidate discovery commit leaves no partial Session", async () => 
     )
   );
   assert.equal(await repository.getSession("session-1"), null);
+  assert.equal(await repository.getActiveContext(), null);
 });
 
 test("atomically merges absolute signals with fieldwise maxima", async () => {
@@ -625,7 +915,7 @@ test("single-record deletes remove records and are idempotent", async () => {
   const repository = createRepository(
     createTransactionalMemoryStorageAdapter()
   );
-  await repository.saveSession(createSession());
+  await repository.mergeDiscoveredCandidates(createDiscovery());
   await repository.saveChosen(createChosen());
   await repository.saveReencounter(createReencounter());
   await repository.saveSettings(createSettings());
@@ -638,6 +928,7 @@ test("single-record deletes remove records and are idempotent", async () => {
   );
   assert.equal(await repository.deleteSettings(), true);
   assert.equal(await repository.getSession("session-1"), null);
+  assert.equal(await repository.getActiveContext(), null);
   assert.equal(await repository.getChosen("chosen-1"), null);
   assert.equal(await repository.getReencounter("reencounter-1"), null);
   assert.equal(await repository.getSettings(), null);
@@ -661,7 +952,7 @@ test("deleteAll clears domain data but keeps the compatible schemaVersion", asyn
   const repository = createRepository(
     createTransactionalMemoryStorageAdapter()
   );
-  await repository.saveSession(createSession());
+  await repository.mergeDiscoveredCandidates(createDiscovery());
   await repository.saveChosen(createChosen());
   await repository.saveMissedPath(createMissedPath());
   await repository.saveReencounter(createReencounter());
@@ -674,6 +965,7 @@ test("deleteAll clears domain data but keeps the compatible schemaVersion", asyn
   assert.deepEqual(await repository.listChosen(), []);
   assert.deepEqual(await repository.listMissedPaths(), []);
   assert.deepEqual(await repository.listReencounters(), []);
+  assert.equal(await repository.getActiveContext(), null);
   assert.equal(await repository.getSettings(), null);
 });
 
@@ -769,7 +1061,7 @@ test("atomically persists session outputs and a durable idempotence marker", asy
 test("failed atomic session finalization leaves no outputs or marker", async () => {
   const adapter = createTransactionalMemoryStorageAdapter();
   const repository = createRepository(adapter);
-  await repository.getSchemaVersion();
+  await repository.mergeDiscoveredCandidates(createDiscovery());
   const failure = new Error("simulated finalization failure");
   adapter.failNextCommit(failure);
 
@@ -786,6 +1078,11 @@ test("failed atomic session finalization leaves no outputs or marker", async () 
   assert.deepEqual(await repository.listChosen(), []);
   assert.deepEqual(await repository.listMissedPaths(), []);
   assert.equal(await repository.getSessionFinalization("session-1"), null);
+  assert.deepEqual(await repository.getActiveContext(), {
+    sessionId: "session-1",
+    context: createContext(),
+    activatedAt: 200
+  });
 });
 
 test("strict DTO validation prevents non-minimal or sensitive extra fields", async () => {

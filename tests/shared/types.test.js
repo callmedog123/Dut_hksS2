@@ -2,9 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CONSIDERATION_REASON_CODES,
+  MISSED_PATH_STATUSES,
+  REENCOUNTER_OUTCOMES,
+  REENCOUNTER_REASON_CODES,
   SCHEMA_VERSION,
   isCandidateSignalsV1,
   isCandidateV1,
+  isConsiderationReasonV1,
+  isMissedPathV1,
+  isRankedReencounterV1,
+  isReencounterRecordV1,
+  isReencounterReasonV1,
   isSearchContextV1
 } from "../../shared/types.js";
 import { MESSAGE_SCHEMA_VERSION } from "../../shared/messages.js";
@@ -32,6 +41,43 @@ const validSignals = Object.freeze({
   hoverCount: 2,
   returnCount: 1,
   clicked: false
+});
+
+const validConsiderationReason = Object.freeze({
+  code: CONSIDERATION_REASON_CODES.LONG_EXPOSURE,
+  label: "Visible time contributed.",
+  contribution: 0.3
+});
+
+const validMissedPath = Object.freeze({
+  id: "missed-1",
+  candidate: validCandidate,
+  context: validContext,
+  score: 0.7,
+  reasons: [validConsiderationReason],
+  status: MISSED_PATH_STATUSES.MISSED,
+  createdAt: 200
+});
+
+const validReencounterReason = Object.freeze({
+  code: REENCOUNTER_REASON_CODES.CONTEXT_MATCH,
+  label: "Context keywords matched.",
+  contribution: 0.4
+});
+
+const validRankedReencounter = Object.freeze({
+  missedPath: validMissedPath,
+  score: 0.8,
+  reasons: [validReencounterReason]
+});
+
+const validReencounterRecord = Object.freeze({
+  id: "shown-1",
+  missedPathId: "missed-1",
+  triggerContext: validContext,
+  score: 0.8,
+  reasons: [validReencounterReason],
+  shownAt: 300
 });
 
 test("uses one shared schemaVersion constant fixed at 1", () => {
@@ -122,5 +168,152 @@ test("rejects negative, non-integer, or extra CandidateSignalsV1 fields", () => 
 
   for (const signals of invalidSignals) {
     assert.equal(isCandidateSignalsV1(signals), false);
+  }
+});
+
+test("freezes the shared v1 DTO enums", () => {
+  assert.equal(Object.isFrozen(CONSIDERATION_REASON_CODES), true);
+  assert.equal(Object.isFrozen(MISSED_PATH_STATUSES), true);
+  assert.equal(Object.isFrozen(REENCOUNTER_REASON_CODES), true);
+  assert.deepEqual(Object.values(MISSED_PATH_STATUSES).sort(), [
+    "ARCHIVED",
+    "ELIGIBLE",
+    "MISSED",
+    "REENCOUNTERED"
+  ]);
+});
+
+test("validates strict ConsiderationReasonV1 with optional nonnegative contribution", () => {
+  assert.equal(isConsiderationReasonV1(validConsiderationReason), true);
+  assert.equal(
+    isConsiderationReasonV1({
+      code: CONSIDERATION_REASON_CODES.NOT_CLICKED,
+      label: "The Candidate was not clicked."
+    }),
+    true
+  );
+
+  const invalidReasons = [
+    null,
+    { ...validConsiderationReason, code: "UNKNOWN" },
+    { ...validConsiderationReason, label: "" },
+    { ...validConsiderationReason, contribution: -0.1 },
+    { ...validConsiderationReason, contribution: Number.NaN },
+    { ...validConsiderationReason, contribution: Number.POSITIVE_INFINITY },
+    { ...validConsiderationReason, extra: true },
+    { label: validConsiderationReason.label }
+  ];
+  for (const reason of invalidReasons) {
+    assert.equal(isConsiderationReasonV1(reason), false);
+  }
+});
+
+test("validates strict MissedPathV1 fields, statuses, and unit score", () => {
+  assert.equal(isMissedPathV1(validMissedPath), true);
+  for (const status of Object.values(MISSED_PATH_STATUSES)) {
+    assert.equal(isMissedPathV1({ ...validMissedPath, status }), true);
+  }
+
+  const invalidMissedPaths = [
+    { ...validMissedPath, id: "" },
+    { ...validMissedPath, score: -0.1 },
+    { ...validMissedPath, score: 1.1 },
+    { ...validMissedPath, score: Number.NaN },
+    { ...validMissedPath, status: "UNKNOWN" },
+    {
+      ...validMissedPath,
+      reasons: [validReencounterReason]
+    },
+    { ...validMissedPath, createdAt: -1 },
+    { ...validMissedPath, extra: true },
+    Object.fromEntries(
+      Object.entries(validMissedPath).filter(([key]) => key !== "context")
+    )
+  ];
+  for (const missedPath of invalidMissedPaths) {
+    assert.equal(isMissedPathV1(missedPath), false);
+  }
+});
+
+test("validates ReencounterReasonV1 including finite negative penalties", () => {
+  assert.equal(isReencounterReasonV1(validReencounterReason), true);
+  assert.equal(
+    isReencounterReasonV1({
+      code: REENCOUNTER_REASON_CODES.COOLDOWN_PENALTY,
+      label: "Cooldown reduced relevance.",
+      contribution: -0.25
+    }),
+    true
+  );
+  assert.equal(
+    isReencounterReasonV1({
+      code: REENCOUNTER_REASON_CODES.FRESHNESS,
+      label: "Freshness was evaluated."
+    }),
+    true
+  );
+
+  const invalidReasons = [
+    { ...validReencounterReason, code: "UNKNOWN" },
+    { ...validReencounterReason, label: "" },
+    { ...validReencounterReason, contribution: Number.NaN },
+    { ...validReencounterReason, contribution: Number.NEGATIVE_INFINITY },
+    { ...validReencounterReason, extra: true },
+    { code: validReencounterReason.code }
+  ];
+  for (const reason of invalidReasons) {
+    assert.equal(isReencounterReasonV1(reason), false);
+  }
+});
+
+test("validates strict RankedReencounterV1 separately from persisted records", () => {
+  assert.equal(isRankedReencounterV1(validRankedReencounter), true);
+
+  const invalidRanked = [
+    { ...validRankedReencounter, score: -0.1 },
+    { ...validRankedReencounter, score: 1.1 },
+    { ...validRankedReencounter, score: Number.NaN },
+    {
+      ...validRankedReencounter,
+      reasons: [{ ...validReencounterReason, code: "UNKNOWN" }]
+    },
+    { ...validRankedReencounter, extra: true },
+    {
+      id: "persistent-record",
+      missedPathId: "missed-1",
+      triggerContext: validContext,
+      score: 0.8,
+      reasons: [validReencounterReason],
+      shownAt: 300
+    }
+  ];
+  for (const ranked of invalidRanked) {
+    assert.equal(isRankedReencounterV1(ranked), false);
+  }
+});
+
+test("validates strict durable ReencounterRecordV1 with optional outcome", () => {
+  assert.equal(isReencounterRecordV1(validReencounterRecord), true);
+  for (const outcome of Object.values(REENCOUNTER_OUTCOMES)) {
+    assert.equal(
+      isReencounterRecordV1({ ...validReencounterRecord, outcome }),
+      true
+    );
+  }
+
+  const invalidRecords = [
+    { ...validReencounterRecord, id: "" },
+    { ...validReencounterRecord, missedPathId: "" },
+    { ...validReencounterRecord, score: 1.1 },
+    { ...validReencounterRecord, shownAt: -1 },
+    { ...validReencounterRecord, shownAt: Number.NaN },
+    { ...validReencounterRecord, outcome: "UNKNOWN" },
+    { ...validReencounterRecord, extra: true },
+    Object.fromEntries(
+      Object.entries(validReencounterRecord).filter(([key]) => key !== "shownAt")
+    )
+  ];
+  for (const record of invalidRecords) {
+    assert.equal(isReencounterRecordV1(record), false);
   }
 });

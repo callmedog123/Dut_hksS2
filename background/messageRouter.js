@@ -6,23 +6,41 @@ import {
   SCHEMA_VERSION,
   createErrorResponseMessage,
   createSuccessResponseMessage,
+  isActiveContextQueryMessage,
+  isActiveContextQueryResponse,
   isCandidatesDiscoveredMessage,
   isCandidatesDiscoveredResponse,
   isMissedPathsQueryMessage,
+  isReencounterFeedbackMessage,
+  isReencounterFeedbackResponse,
   isReencounterQueryMessage,
+  isReencounterShownMessage,
+  isReencounterShownResponse,
   isSessionFinalizeMessage,
   isSessionFinalizeResponse,
   isSignalsUpdatedMessage,
   isSignalsUpdatedResponse
 } from "../shared/messages.js";
 import {
+  ActiveContextQueryError,
+  createActiveContextQueryUseCase
+} from "./activeContextQuery.js";
+import {
   CandidateDiscoveryError,
   createCandidateDiscoveryUseCase
 } from "./candidateDiscovery.js";
 import {
+  ReencounterFeedbackError,
+  createReencounterFeedbackUseCase
+} from "./reencounterFeedback.js";
+import {
   ReencounterQueryError,
   createReencounterQueryUseCase
 } from "./reencounterQuery.js";
+import {
+  ReencounterShownError,
+  createReencounterShownUseCase
+} from "./reencounterShown.js";
 import {
   SignalsUpdateError,
   createSignalsUpdateUseCase
@@ -60,13 +78,19 @@ function createRequestError(requestId, code, message, retryable) {
  *
  * @param {{
  *   listMissedPaths: () => Promise<unknown[]>,
+ *   getActiveContext?: () => Promise<unknown>,
  *   listReencounters?: () => Promise<unknown[]>,
+ *   recordReencounterFeedback?: (payload: object) => Promise<unknown>,
+ *   recordReencounterShown?: (payload: object) => Promise<unknown>,
  *   mergeDiscoveredCandidates?: (payload: object) => Promise<unknown>,
  *   mergeCandidateSignalsSnapshot?: (payload: object) => Promise<unknown>
  * }} repository
  * @param {{
+ *   activeContextQueryUseCase?: {execute: () => Promise<unknown>},
  *   candidateDiscoveryUseCase?: {execute: (payload: object) => Promise<unknown>},
  *   reencounterQueryUseCase?: {execute: (payload: object) => Promise<unknown[]>},
+ *   reencounterFeedbackUseCase?: {execute: (payload: object) => Promise<unknown>},
+ *   reencounterShownUseCase?: {execute: (payload: object) => Promise<unknown>},
  *   sessionFinalizeUseCase?: {execute: (payload: object) => Promise<unknown>},
  *   signalsUpdateUseCase?: {execute: (payload: object) => Promise<unknown>}
  * }} [options]
@@ -76,9 +100,21 @@ export function createMessageRouter(repository, options = {}) {
   if (!isRecord(options)) {
     throw new TypeError("Message Router options must be an object.");
   }
+  const activeContextQueryUseCase = options.activeContextQueryUseCase ??
+    (typeof repository.getActiveContext === "function"
+      ? createActiveContextQueryUseCase(repository)
+      : null);
   const reencounterQueryUseCase = options.reencounterQueryUseCase ??
     (typeof repository.listReencounters === "function"
       ? createReencounterQueryUseCase(repository)
+      : null);
+  const reencounterFeedbackUseCase = options.reencounterFeedbackUseCase ??
+    (typeof repository.recordReencounterFeedback === "function"
+      ? createReencounterFeedbackUseCase(repository)
+      : null);
+  const reencounterShownUseCase = options.reencounterShownUseCase ??
+    (typeof repository.recordReencounterShown === "function"
+      ? createReencounterShownUseCase(repository)
       : null);
   const candidateDiscoveryUseCase = options.candidateDiscoveryUseCase ??
     (typeof repository.mergeDiscoveredCandidates === "function"
@@ -89,6 +125,15 @@ export function createMessageRouter(repository, options = {}) {
       ? createSignalsUpdateUseCase(repository)
       : null);
   const sessionFinalizeUseCase = options.sessionFinalizeUseCase ?? null;
+  if (
+    activeContextQueryUseCase !== null &&
+    (!isRecord(activeContextQueryUseCase) ||
+      typeof activeContextQueryUseCase.execute !== "function")
+  ) {
+    throw new TypeError(
+      "Message Router Active Context query use case must implement execute()."
+    );
+  }
   if (
     candidateDiscoveryUseCase !== null &&
     (!isRecord(candidateDiscoveryUseCase) ||
@@ -125,6 +170,24 @@ export function createMessageRouter(repository, options = {}) {
       "Message Router Re-encounter query use case must implement execute()."
     );
   }
+  if (
+    reencounterFeedbackUseCase !== null &&
+    (!isRecord(reencounterFeedbackUseCase) ||
+      typeof reencounterFeedbackUseCase.execute !== "function")
+  ) {
+    throw new TypeError(
+      "Message Router Re-encounter feedback use case must implement execute()."
+    );
+  }
+  if (
+    reencounterShownUseCase !== null &&
+    (!isRecord(reencounterShownUseCase) ||
+      typeof reencounterShownUseCase.execute !== "function")
+  ) {
+    throw new TypeError(
+      "Message Router Re-encounter shown use case must implement execute()."
+    );
+  }
 
   return Object.freeze({
     /**
@@ -135,10 +198,16 @@ export function createMessageRouter(repository, options = {}) {
       if (!isRecord(message)) {
         return null;
       }
+      const isActiveContextQuery =
+        message.type === MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY;
       const isMissedPathsQuery =
         message.type === MESSAGE_TYPES.MISSED_PATHS_QUERY;
       const isReencounterQuery =
         message.type === MESSAGE_TYPES.RE_ENCOUNTER_QUERY;
+      const isReencounterFeedback =
+        message.type === MESSAGE_TYPES.RE_ENCOUNTER_FEEDBACK;
+      const isReencounterShown =
+        message.type === MESSAGE_TYPES.RE_ENCOUNTER_SHOWN;
       const isCandidatesDiscovered =
         message.type === MESSAGE_TYPES.CANDIDATES_DISCOVERED;
       const isSignalsUpdated =
@@ -146,8 +215,11 @@ export function createMessageRouter(repository, options = {}) {
       const isSessionFinalize =
         message.type === MESSAGE_TYPES.SESSION_FINALIZE;
       if (
+        !isActiveContextQuery &&
         !isMissedPathsQuery &&
         !isReencounterQuery &&
+        !isReencounterFeedback &&
+        !isReencounterShown &&
         !isCandidatesDiscovered &&
         !isSignalsUpdated &&
         !isSessionFinalize
@@ -165,10 +237,16 @@ export function createMessageRouter(repository, options = {}) {
           false
         );
       }
-      const isValidRequest = isMissedPathsQuery
-        ? isMissedPathsQueryMessage(message)
-        : isReencounterQuery
+      const isValidRequest = isActiveContextQuery
+        ? isActiveContextQueryMessage(message)
+        : isMissedPathsQuery
+          ? isMissedPathsQueryMessage(message)
+          : isReencounterQuery
           ? isReencounterQueryMessage(message)
+          : isReencounterFeedback
+            ? isReencounterFeedbackMessage(message)
+          : isReencounterShown
+            ? isReencounterShownMessage(message)
           : isCandidatesDiscovered
             ? isCandidatesDiscoveredMessage(message)
             : isSignalsUpdated
@@ -181,6 +259,45 @@ export function createMessageRouter(repository, options = {}) {
           `Invalid ${String(message.type)} payload.`,
           false
         );
+      }
+
+      if (isActiveContextQuery) {
+        if (activeContextQueryUseCase === null) {
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.STORAGE_ERROR,
+            "Active Context query is unavailable.",
+            true
+          );
+        }
+        try {
+          const activeContext = await activeContextQueryUseCase.execute();
+          const response = createSuccessResponseMessage(
+            message.requestId,
+            activeContext
+          );
+          if (!isActiveContextQueryResponse(response)) {
+            throw new ActiveContextQueryError(
+              "Active Context query returned invalid data."
+            );
+          }
+          return response;
+        } catch (error) {
+          if (error instanceof ActiveContextQueryError) {
+            return createRequestError(
+              message.requestId,
+              error.code,
+              error.message,
+              error.retryable
+            );
+          }
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.STORAGE_ERROR,
+            "Unable to query the current SearchContext.",
+            true
+          );
+        }
       }
 
       if (isSessionFinalize) {
@@ -346,6 +463,90 @@ export function createMessageRouter(repository, options = {}) {
             message.requestId,
             RESPONSE_ERROR_CODES.REENCOUNTER_QUERY_FAILED,
             "Unable to execute Re-encounter query.",
+            false
+          );
+        }
+      }
+
+      if (isReencounterFeedback) {
+        if (reencounterFeedbackUseCase === null) {
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.REENCOUNTER_FEEDBACK_FAILED,
+            "Re-encounter feedback use case is unavailable.",
+            false
+          );
+        }
+        try {
+          const feedback = await reencounterFeedbackUseCase.execute(
+            message.payload
+          );
+          const response = createSuccessResponseMessage(
+            message.requestId,
+            feedback
+          );
+          if (!isReencounterFeedbackResponse(response)) {
+            throw new ReencounterFeedbackError(
+              RESPONSE_ERROR_CODES.REENCOUNTER_FEEDBACK_FAILED,
+              "Re-encounter feedback returned invalid data.",
+              false
+            );
+          }
+          return response;
+        } catch (error) {
+          if (error instanceof ReencounterFeedbackError) {
+            return createRequestError(
+              message.requestId,
+              error.code,
+              error.message,
+              error.retryable
+            );
+          }
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.REENCOUNTER_FEEDBACK_FAILED,
+            "Unable to execute Re-encounter feedback.",
+            false
+          );
+        }
+      }
+
+      if (isReencounterShown) {
+        if (reencounterShownUseCase === null) {
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.REENCOUNTER_SHOWN_FAILED,
+            "Re-encounter shown use case is unavailable.",
+            false
+          );
+        }
+        try {
+          const shown = await reencounterShownUseCase.execute(message.payload);
+          const response = createSuccessResponseMessage(
+            message.requestId,
+            shown
+          );
+          if (!isReencounterShownResponse(response)) {
+            throw new ReencounterShownError(
+              RESPONSE_ERROR_CODES.REENCOUNTER_SHOWN_FAILED,
+              "Re-encounter shown returned invalid data.",
+              false
+            );
+          }
+          return response;
+        } catch (error) {
+          if (error instanceof ReencounterShownError) {
+            return createRequestError(
+              message.requestId,
+              error.code,
+              error.message,
+              error.retryable
+            );
+          }
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.REENCOUNTER_SHOWN_FAILED,
+            "Unable to execute Re-encounter shown.",
             false
           );
         }

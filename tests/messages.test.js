@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ACTIVE_CONTEXT_STATUSES,
   MESSAGE_SCHEMA_VERSION,
   MESSAGE_TYPES,
   RESPONSE_ERROR_CODES,
   SCHEMA_VERSION,
+  createActiveContextQueryMessage,
   createCandidateChosenMessage,
   createCandidatesDiscoveredMessage,
   createErrorResponseMessage,
@@ -13,9 +15,12 @@ import {
   createPingMessage,
   createPongMessage,
   createReencounterQueryMessage,
+  createReencounterShownMessage,
   createSessionFinalizeMessage,
   createSignalsUpdatedMessage,
   createSuccessResponseMessage,
+  isActiveContextQueryMessage,
+  isActiveContextQueryResponse,
   isCandidateChosenMessage,
   isCandidatesDiscoveredMessage,
   isCandidatesDiscoveredResponse,
@@ -25,6 +30,8 @@ import {
   isPongMessage,
   isReencounterQueryMessage,
   isReencounterQueryResponse,
+  isReencounterShownMessage,
+  isReencounterShownResponse,
   isResponseMessage,
   isSessionFinalizeMessage,
   isSessionFinalizeResponse,
@@ -93,6 +100,9 @@ const sessionFinalize = createSessionFinalizeMessage(
   500,
   "request-finalize"
 );
+const activeContextQuery = createActiveContextQueryMessage(
+  "request-active-context"
+);
 const missedPathsQuery = createMissedPathsQueryMessage("request-missed-paths");
 const reencounterContext = {
   query: "robot navigation",
@@ -105,8 +115,46 @@ const reencounterQuery = createReencounterQueryMessage(
   3,
   "request-reencounter"
 );
+const missedPath = {
+  id: "missed-1",
+  candidate: discoveredCandidates[0],
+  context: discoveredContext,
+  score: 0.7,
+  reasons: [
+    {
+      code: "LONG_EXPOSURE",
+      label: "Visible time contributed.",
+      contribution: 0.3
+    }
+  ],
+  status: "MISSED",
+  createdAt: 300
+};
+const rankedReencounter = {
+  missedPath,
+  score: 0.8,
+  reasons: [
+    {
+      code: "COOLDOWN_PENALTY",
+      label: "Cooldown reduced relevance.",
+      contribution: -0.2
+    }
+  ]
+};
+const reencounterShown = createReencounterShownMessage(
+  rankedReencounter,
+  reencounterContext,
+  1_100,
+  "request-reencounter-shown"
+);
 
 const messageCases = [
+  {
+    name: "ACTIVE_CONTEXT_QUERY",
+    message: activeContextQuery,
+    validator: isActiveContextQueryMessage,
+    wrongType: MESSAGE_TYPES.PING
+  },
   {
     name: "PING",
     message: ping,
@@ -154,18 +202,26 @@ const messageCases = [
     message: reencounterQuery,
     validator: isReencounterQueryMessage,
     wrongType: MESSAGE_TYPES.PING
+  },
+  {
+    name: "RE_ENCOUNTER_SHOWN",
+    message: reencounterShown,
+    validator: isReencounterShownMessage,
+    wrongType: MESSAGE_TYPES.PING
   }
 ];
 
 test("keeps MESSAGE_TYPES frozen with the implemented v1 messages", () => {
   assert.equal(Object.isFrozen(MESSAGE_TYPES), true);
   assert.deepEqual(Object.keys(MESSAGE_TYPES).sort(), [
+    "ACTIVE_CONTEXT_QUERY",
     "CANDIDATES_DISCOVERED",
     "CANDIDATE_CHOSEN",
     "MISSED_PATHS_QUERY",
     "PING",
     "PONG",
     "RE_ENCOUNTER_QUERY",
+    "RE_ENCOUNTER_SHOWN",
     "SESSION_FINALIZE",
     "SIGNALS_UPDATED"
   ]);
@@ -367,6 +423,24 @@ test("creates a strict SESSION_FINALIZE request", () => {
   );
 });
 
+test("creates an exact ACTIVE_CONTEXT_QUERY with a strict empty payload", () => {
+  assert.deepEqual(activeContextQuery, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY,
+    requestId: "request-active-context",
+    payload: {}
+  });
+  assert.equal(isActiveContextQueryMessage(activeContextQuery), true);
+  assert.throws(() => createActiveContextQueryMessage(""), TypeError);
+  assert.equal(
+    isActiveContextQueryMessage({
+      ...activeContextQuery,
+      payload: { source: "side-panel" }
+    }),
+    false
+  );
+});
+
 test("creates an exact MISSED_PATHS_QUERY with a strict empty payload", () => {
   assert.deepEqual(missedPathsQuery, {
     schemaVersion: SCHEMA_VERSION,
@@ -558,6 +632,251 @@ test("shared ResponseMessage factories create strict success and error shapes", 
       })
     ),
     false
+  );
+});
+
+test("creates a strict deterministic RE_ENCOUNTER_SHOWN durable record", () => {
+  assert.equal(isReencounterShownMessage(reencounterShown), true);
+  assert.deepEqual(reencounterShown, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.RE_ENCOUNTER_SHOWN,
+    requestId: "request-reencounter-shown",
+    payload: {
+      id: reencounterShown.payload.id,
+      missedPathId: "missed-1",
+      triggerContext: reencounterContext,
+      score: 0.8,
+      reasons: rankedReencounter.reasons,
+      shownAt: 1_100
+    }
+  });
+  assert.equal(
+    createReencounterShownMessage(
+      rankedReencounter,
+      reencounterContext,
+      1_100,
+      "retry-request"
+    ).payload.id,
+    reencounterShown.payload.id
+  );
+  assert.notEqual(
+    createReencounterShownMessage(
+      rankedReencounter,
+      { ...reencounterContext, query: "different context" },
+      1_100,
+      "different-context"
+    ).payload.id,
+    reencounterShown.payload.id
+  );
+});
+
+test("RE_ENCOUNTER_SHOWN rejects outcome, invalid time, and extra fields", () => {
+  assert.equal(
+    isReencounterShownMessage({
+      ...reencounterShown,
+      payload: { ...reencounterShown.payload, outcome: "OPENED" }
+    }),
+    false
+  );
+  assert.equal(
+    isReencounterShownMessage({
+      ...reencounterShown,
+      payload: { ...reencounterShown.payload, shownAt: Number.NaN }
+    }),
+    false
+  );
+  assert.equal(
+    isReencounterShownMessage({
+      ...reencounterShown,
+      payload: { ...reencounterShown.payload, extra: true }
+    }),
+    false
+  );
+  assert.throws(
+    () =>
+      createReencounterShownMessage(
+        rankedReencounter,
+        reencounterContext,
+        -1,
+        "request"
+      ),
+    TypeError
+  );
+});
+
+test("MISSED_PATHS_QUERY response strictly validates every MissedPathV1", () => {
+  const responseFor = (item) =>
+    createSuccessResponseMessage("request-missed-response", {
+      missedPaths: [item]
+    });
+
+  assert.equal(isMissedPathsQueryResponse(responseFor(missedPath)), true);
+  assert.equal(
+    isMissedPathsQueryResponse(
+      responseFor({ ...missedPath, status: "UNKNOWN" })
+    ),
+    false
+  );
+  assert.equal(
+    isMissedPathsQueryResponse(responseFor({ ...missedPath, score: 1.1 })),
+    false
+  );
+  assert.equal(
+    isMissedPathsQueryResponse(
+      responseFor({
+        ...missedPath,
+        reasons: [{ code: "UNKNOWN", label: "Unknown." }]
+      })
+    ),
+    false
+  );
+  assert.equal(
+    isMissedPathsQueryResponse(responseFor({ ...missedPath, extra: true })),
+    false
+  );
+  assert.equal(
+    isMissedPathsQueryResponse(
+      responseFor(
+        Object.fromEntries(
+          Object.entries(missedPath).filter(([key]) => key !== "candidate")
+        )
+      )
+    ),
+    false
+  );
+});
+
+test("ACTIVE_CONTEXT_QUERY response strictly distinguishes available and unavailable", () => {
+  const available = createSuccessResponseMessage("request-active-available", {
+    status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+    context: discoveredContext
+  });
+  const unavailable = createSuccessResponseMessage(
+    "request-active-unavailable",
+    {
+      status: ACTIVE_CONTEXT_STATUSES.UNAVAILABLE,
+      context: null
+    }
+  );
+
+  assert.equal(isActiveContextQueryResponse(available), true);
+  assert.equal(isActiveContextQueryResponse(unavailable), true);
+  assert.equal(
+    isActiveContextQueryResponse(
+      createSuccessResponseMessage("request-active-invalid", {
+        status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+        context: null
+      })
+    ),
+    false
+  );
+  assert.equal(
+    isActiveContextQueryResponse(
+      createSuccessResponseMessage("request-active-invalid", {
+        status: ACTIVE_CONTEXT_STATUSES.UNAVAILABLE,
+        context: discoveredContext
+      })
+    ),
+    false
+  );
+  assert.equal(
+    isActiveContextQueryResponse(
+      createSuccessResponseMessage("request-active-invalid", {
+        status: "UNKNOWN",
+        context: null
+      })
+    ),
+    false
+  );
+  assert.equal(
+    isActiveContextQueryResponse(
+      createSuccessResponseMessage("request-active-invalid", {
+        status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+        context: discoveredContext,
+        extra: true
+      })
+    ),
+    false
+  );
+});
+
+test("RE_ENCOUNTER_QUERY response strictly validates RankedReencounterV1", () => {
+  const responseFor = (item) =>
+    createSuccessResponseMessage("request-reencounter-response", {
+      reencounters: [item]
+    });
+
+  assert.equal(
+    isReencounterQueryResponse(responseFor(rankedReencounter)),
+    true
+  );
+  assert.equal(
+    isReencounterQueryResponse(
+      responseFor({ ...rankedReencounter, score: Number.NaN })
+    ),
+    false
+  );
+  assert.equal(
+    isReencounterQueryResponse(
+      responseFor({
+        ...rankedReencounter,
+        reasons: [{ code: "UNKNOWN", label: "Unknown." }]
+      })
+    ),
+    false
+  );
+  assert.equal(
+    isReencounterQueryResponse(
+      responseFor({ ...rankedReencounter, extra: true })
+    ),
+    false
+  );
+  assert.equal(
+    isReencounterQueryResponse(
+      responseFor({
+        id: "persistent-reencounter",
+        missedPathId: "missed-1",
+        triggerContext: reencounterContext,
+        score: 0.8,
+        reasons: rankedReencounter.reasons,
+        shownAt: 500
+      })
+    ),
+    false
+  );
+});
+
+test("RE_ENCOUNTER_SHOWN response strictly validates persisted identity", () => {
+  const response = createSuccessResponseMessage("shown-response", {
+    reencounterId: reencounterShown.payload.id,
+    missedPathId: "missed-1",
+    shownAt: 1_100,
+    created: true
+  });
+  assert.equal(isReencounterShownResponse(response), true);
+  assert.equal(
+    isReencounterShownResponse({
+      ...response,
+      data: { ...response.data, created: "yes" }
+    }),
+    false
+  );
+  assert.equal(
+    isReencounterShownResponse({
+      ...response,
+      data: { ...response.data, extra: true }
+    }),
+    false
+  );
+  assert.equal(
+    isReencounterShownResponse(
+      createErrorResponseMessage("shown-response", {
+        code: RESPONSE_ERROR_CODES.MISSED_PATH_NOT_FOUND,
+        message: "Unknown Missed Path.",
+        retryable: false
+      })
+    ),
+    true
   );
 });
 

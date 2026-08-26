@@ -65,6 +65,28 @@ body {
   border-radius: 10px;
 }
 
+.contextual-session {
+  border-color: #d8e0f5;
+  background: linear-gradient(180deg, #ffffff 0%, #fafbff 100%);
+}
+
+.contextual-status {
+  margin-top: 10px;
+}
+
+.contextual-retry {
+  margin-top: 8px;
+}
+
+.reencounter-list {
+  margin-top: 10px;
+}
+
+.card-reencounter {
+  border-color: #d8e0f5;
+  box-shadow: 0 1px 0 rgb(47 91 215 / 5%);
+}
+
 .section-title {
   margin: 0 0 6px;
   color: var(--text-soft);

@@ -3,6 +3,50 @@
 /** The single version source for all shared v1 contracts. */
 export const SCHEMA_VERSION = 1;
 
+export const CONSIDERATION_REASON_CODES = Object.freeze({
+  LONG_EXPOSURE: "LONG_EXPOSURE",
+  LONG_HOVER: "LONG_HOVER",
+  NOT_CLICKED: "NOT_CLICKED",
+  REPEATED_HOVER: "REPEATED_HOVER",
+  RETURN_VIEW: "RETURN_VIEW"
+});
+
+export const MISSED_PATH_STATUSES = Object.freeze({
+  ARCHIVED: "ARCHIVED",
+  ELIGIBLE: "ELIGIBLE",
+  MISSED: "MISSED",
+  REENCOUNTERED: "REENCOUNTERED"
+});
+
+export const REENCOUNTER_REASON_CODES = Object.freeze({
+  CONTEXT_MATCH: "CONTEXT_MATCH",
+  COOLDOWN_PENALTY: "COOLDOWN_PENALTY",
+  FRESHNESS: "FRESHNESS",
+  NOVELTY_OR_DIVERGENCE_P0_ZERO: "NOVELTY_OR_DIVERGENCE_P0_ZERO",
+  PRIOR_CONSIDERATION: "PRIOR_CONSIDERATION",
+  REPEATED_DISMISSAL_PENALTY: "REPEATED_DISMISSAL_PENALTY"
+});
+
+export const REENCOUNTER_OUTCOMES = Object.freeze({
+  DELETED: "DELETED",
+  DISMISSED: "DISMISSED",
+  LATER: "LATER",
+  NOT_RELEVANT: "NOT_RELEVANT",
+  OPENED: "OPENED"
+});
+
+export const REENCOUNTER_FEEDBACK_OUTCOMES = Object.freeze({
+  LATER: REENCOUNTER_OUTCOMES.LATER,
+  NOT_RELEVANT: REENCOUNTER_OUTCOMES.NOT_RELEVANT,
+  OPENED: REENCOUNTER_OUTCOMES.OPENED
+});
+
+/** @typedef {typeof CONSIDERATION_REASON_CODES[keyof typeof CONSIDERATION_REASON_CODES]} ConsiderationReasonCodeV1 */
+/** @typedef {typeof MISSED_PATH_STATUSES[keyof typeof MISSED_PATH_STATUSES]} MissedPathStatusV1 */
+/** @typedef {typeof REENCOUNTER_REASON_CODES[keyof typeof REENCOUNTER_REASON_CODES]} ReencounterReasonCodeV1 */
+/** @typedef {typeof REENCOUNTER_OUTCOMES[keyof typeof REENCOUNTER_OUTCOMES]} ReencounterOutcomeV1 */
+/** @typedef {typeof REENCOUNTER_FEEDBACK_OUTCOMES[keyof typeof REENCOUNTER_FEEDBACK_OUTCOMES]} ReencounterFeedbackOutcomeV1 */
+
 /**
  * A normalized result candidate emitted by a Site Adapter.
  *
@@ -38,6 +82,69 @@ export const SCHEMA_VERSION = 1;
  * @property {boolean} clicked
  */
 
+/**
+ * One explainable contribution to a persisted Consideration Score.
+ *
+ * @typedef {object} ConsiderationReasonV1
+ * @property {ConsiderationReasonCodeV1} code
+ * @property {string} label
+ * @property {number} [contribution]
+ */
+
+/**
+ * A locally persisted Candidate that qualified as a Missed Path.
+ *
+ * @typedef {object} MissedPathV1
+ * @property {string} id
+ * @property {CandidateV1} candidate
+ * @property {SearchContextV1} context
+ * @property {number} score
+ * @property {ConsiderationReasonV1[]} reasons
+ * @property {MissedPathStatusV1} status
+ * @property {number} createdAt
+ */
+
+/**
+ * One explainable contribution or penalty in a Re-encounter score.
+ *
+ * @typedef {object} ReencounterReasonV1
+ * @property {ReencounterReasonCodeV1} code
+ * @property {string} label
+ * @property {number} [contribution]
+ */
+
+/**
+ * A query-only ranked result. This is intentionally not the persisted
+ * Reencounter record shape used by the Repository.
+ *
+ * @typedef {object} RankedReencounterV1
+ * @property {MissedPathV1} missedPath
+ * @property {number} score
+ * @property {ReencounterReasonV1[]} reasons
+ */
+
+/**
+ * The durable Re-encounter record. A record written when a card is shown has
+ * no outcome; a later feedback operation may add the optional outcome.
+ *
+ * @typedef {object} ReencounterRecordV1
+ * @property {string} id
+ * @property {string} missedPathId
+ * @property {SearchContextV1} triggerContext
+ * @property {number} score
+ * @property {ReencounterReasonV1[]} reasons
+ * @property {number} shownAt
+ * @property {ReencounterOutcomeV1} [outcome]
+ * @property {number} [feedbackAt]
+ */
+
+/**
+ * @typedef {object} ReencounterFeedbackV1
+ * @property {string} reencounterId
+ * @property {ReencounterFeedbackOutcomeV1} outcome
+ * @property {number} feedbackAt
+ */
+
 const CANDIDATE_KEYS = Object.freeze([
   "id",
   "url",
@@ -64,6 +171,51 @@ const CANDIDATE_SIGNALS_KEYS = Object.freeze([
   "returnCount",
   "clicked"
 ]);
+const CONSIDERATION_REASON_KEYS = Object.freeze(["code", "label"]);
+const CONSIDERATION_REASON_WITH_CONTRIBUTION_KEYS = Object.freeze([
+  ...CONSIDERATION_REASON_KEYS,
+  "contribution"
+]);
+const MISSED_PATH_KEYS = Object.freeze([
+  "id",
+  "candidate",
+  "context",
+  "score",
+  "reasons",
+  "status",
+  "createdAt"
+]);
+const REENCOUNTER_REASON_KEYS = Object.freeze(["code", "label"]);
+const REENCOUNTER_REASON_WITH_CONTRIBUTION_KEYS = Object.freeze([
+  ...REENCOUNTER_REASON_KEYS,
+  "contribution"
+]);
+const RANKED_REENCOUNTER_KEYS = Object.freeze([
+  "missedPath",
+  "score",
+  "reasons"
+]);
+const REENCOUNTER_RECORD_KEYS = Object.freeze([
+  "id",
+  "missedPathId",
+  "triggerContext",
+  "score",
+  "reasons",
+  "shownAt"
+]);
+const REENCOUNTER_RECORD_WITH_OUTCOME_KEYS = Object.freeze([
+  ...REENCOUNTER_RECORD_KEYS,
+  "outcome"
+]);
+const REENCOUNTER_RECORD_WITH_FEEDBACK_KEYS = Object.freeze([
+  ...REENCOUNTER_RECORD_WITH_OUTCOME_KEYS,
+  "feedbackAt"
+]);
+const REENCOUNTER_FEEDBACK_KEYS = Object.freeze([
+  "reencounterId",
+  "outcome",
+  "feedbackAt"
+]);
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -87,6 +239,18 @@ function isNonEmptyString(value) {
 
 function isFiniteNonNegativeNumber(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isUnitNumber(value) {
+  return isFiniteNonNegativeNumber(value) && value <= 1;
+}
+
+function isConstantValue(constants, value) {
+  return Object.values(constants).includes(value);
 }
 
 function isNonNegativeInteger(value) {
@@ -149,5 +313,132 @@ export function isCandidateSignalsV1(value) {
       isNonNegativeInteger(value.hoverCount) &&
       isNonNegativeInteger(value.returnCount) &&
       typeof value.clicked === "boolean"
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is ConsiderationReasonV1}
+ */
+export function isConsiderationReasonV1(value) {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const hasContribution = Object.hasOwn(value, "contribution");
+  return Boolean(
+    hasExactKeys(
+      value,
+      hasContribution
+        ? CONSIDERATION_REASON_WITH_CONTRIBUTION_KEYS
+        : CONSIDERATION_REASON_KEYS
+    ) &&
+      isConstantValue(CONSIDERATION_REASON_CODES, value.code) &&
+      isNonEmptyString(value.label) &&
+      (!hasContribution || isFiniteNonNegativeNumber(value.contribution))
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is MissedPathV1}
+ */
+export function isMissedPathV1(value) {
+  return Boolean(
+    hasExactKeys(value, MISSED_PATH_KEYS) &&
+      isNonEmptyString(value.id) &&
+      isCandidateV1(value.candidate) &&
+      isSearchContextV1(value.context) &&
+      isUnitNumber(value.score) &&
+      Array.isArray(value.reasons) &&
+      value.reasons.every(isConsiderationReasonV1) &&
+      isConstantValue(MISSED_PATH_STATUSES, value.status) &&
+      isFiniteNonNegativeNumber(value.createdAt)
+  );
+}
+
+/**
+ * Re-encounter reasons allow finite positive contributions, neutral zero, and
+ * finite negative penalty contributions.
+ *
+ * @param {unknown} value
+ * @returns {value is ReencounterReasonV1}
+ */
+export function isReencounterReasonV1(value) {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const hasContribution = Object.hasOwn(value, "contribution");
+  return Boolean(
+    hasExactKeys(
+      value,
+      hasContribution
+        ? REENCOUNTER_REASON_WITH_CONTRIBUTION_KEYS
+        : REENCOUNTER_REASON_KEYS
+    ) &&
+      isConstantValue(REENCOUNTER_REASON_CODES, value.code) &&
+      isNonEmptyString(value.label) &&
+      (!hasContribution || isFiniteNumber(value.contribution))
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is RankedReencounterV1}
+ */
+export function isRankedReencounterV1(value) {
+  return Boolean(
+    hasExactKeys(value, RANKED_REENCOUNTER_KEYS) &&
+      isMissedPathV1(value.missedPath) &&
+      isUnitNumber(value.score) &&
+      Array.isArray(value.reasons) &&
+      value.reasons.every(isReencounterReasonV1)
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is ReencounterRecordV1}
+ */
+export function isReencounterRecordV1(value) {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const hasOutcome = Object.hasOwn(value, "outcome");
+  const hasFeedbackAt = Object.hasOwn(value, "feedbackAt");
+  return Boolean(
+    hasExactKeys(
+      value,
+      hasFeedbackAt
+        ? REENCOUNTER_RECORD_WITH_FEEDBACK_KEYS
+        : hasOutcome
+        ? REENCOUNTER_RECORD_WITH_OUTCOME_KEYS
+        : REENCOUNTER_RECORD_KEYS
+    ) &&
+      isNonEmptyString(value.id) &&
+      isNonEmptyString(value.missedPathId) &&
+      isSearchContextV1(value.triggerContext) &&
+      isUnitNumber(value.score) &&
+      Array.isArray(value.reasons) &&
+      value.reasons.every(isReencounterReasonV1) &&
+      isFiniteNonNegativeNumber(value.shownAt) &&
+      (!hasOutcome || isConstantValue(REENCOUNTER_OUTCOMES, value.outcome)) &&
+      (!hasFeedbackAt ||
+        (hasOutcome && isFiniteNonNegativeNumber(value.feedbackAt)))
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is ReencounterFeedbackV1}
+ */
+export function isReencounterFeedbackV1(value) {
+  return Boolean(
+    hasExactKeys(value, REENCOUNTER_FEEDBACK_KEYS) &&
+      isNonEmptyString(value.reencounterId) &&
+      isConstantValue(REENCOUNTER_FEEDBACK_OUTCOMES, value.outcome) &&
+      isFiniteNonNegativeNumber(value.feedbackAt)
   );
 }

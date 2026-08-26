@@ -36,6 +36,9 @@ const sessionFinalizeUseCase = createSessionFinalizeUseCase({
 });
 
 const messageRouter = createMessageRouter({
+  getActiveContext() {
+    return getRepository().getActiveContext();
+  },
   mergeDiscoveredCandidates(payload) {
     return getRepository().mergeDiscoveredCandidates(payload);
   },
@@ -47,6 +50,12 @@ const messageRouter = createMessageRouter({
   },
   listReencounters() {
     return getRepository().listReencounters();
+  },
+  recordReencounterFeedback(payload) {
+    return getRepository().recordReencounterFeedback(payload);
+  },
+  recordReencounterShown(payload) {
+    return getRepository().recordReencounterShown(payload);
   }
 }, {
   sessionFinalizeUseCase
@@ -106,9 +115,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (
+    message?.type !== MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY &&
     message?.type !== MESSAGE_TYPES.CANDIDATES_DISCOVERED &&
     message?.type !== MESSAGE_TYPES.MISSED_PATHS_QUERY &&
+    message?.type !== MESSAGE_TYPES.RE_ENCOUNTER_FEEDBACK &&
     message?.type !== MESSAGE_TYPES.RE_ENCOUNTER_QUERY &&
+    message?.type !== MESSAGE_TYPES.RE_ENCOUNTER_SHOWN &&
     message?.type !== MESSAGE_TYPES.SESSION_FINALIZE &&
     message?.type !== MESSAGE_TYPES.SIGNALS_UPDATED
   ) {

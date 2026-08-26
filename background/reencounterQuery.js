@@ -40,7 +40,11 @@ function aggregateHistory(missedPaths, reencounters) {
       reencounter.missedPathId.length === 0 ||
       typeof reencounter.shownAt !== "number" ||
       !Number.isFinite(reencounter.shownAt) ||
-      reencounter.shownAt < 0
+      reencounter.shownAt < 0 ||
+      (Object.hasOwn(reencounter, "feedbackAt") &&
+        (typeof reencounter.feedbackAt !== "number" ||
+          !Number.isFinite(reencounter.feedbackAt) ||
+          reencounter.feedbackAt < 0))
     ) {
       throw new TypeError("Repository returned invalid Re-encounter history.");
     }
@@ -49,11 +53,19 @@ function aggregateHistory(missedPaths, reencounters) {
       lastShownAt: null,
       dismissalCount: 0
     };
+    const effectiveShownAt =
+      reencounter.outcome === "LATER" &&
+      Object.hasOwn(reencounter, "feedbackAt")
+        ? Math.max(reencounter.shownAt, reencounter.feedbackAt)
+        : reencounter.shownAt;
     history.lastShownAt =
       history.lastShownAt === null
-        ? reencounter.shownAt
-        : Math.max(history.lastShownAt, reencounter.shownAt);
-    if (reencounter.outcome === "DISMISSED") {
+        ? effectiveShownAt
+        : Math.max(history.lastShownAt, effectiveShownAt);
+    if (
+      reencounter.outcome === "DISMISSED" ||
+      reencounter.outcome === "NOT_RELEVANT"
+    ) {
       history.dismissalCount += 1;
     }
     historyByMissedPathId.set(reencounter.missedPathId, history);

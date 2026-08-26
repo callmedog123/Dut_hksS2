@@ -3,19 +3,25 @@ import test from "node:test";
 
 import { createMessageRouter } from "../../background/messageRouter.js";
 import { ReencounterQueryError } from "../../background/reencounterQuery.js";
+import { ReencounterShownError } from "../../background/reencounterShown.js";
 import { createSessionFinalizeUseCase } from "../../background/sessionFinalize.js";
 import { createSessionManager } from "../../background/sessionManager.js";
 import {
+  ACTIVE_CONTEXT_STATUSES,
   RESPONSE_ERROR_CODES,
   SCHEMA_VERSION,
+  createActiveContextQueryMessage,
   createCandidatesDiscoveredMessage,
   createMissedPathsQueryMessage,
   createReencounterQueryMessage,
+  createReencounterShownMessage,
   createSessionFinalizeMessage,
   createSignalsUpdatedMessage,
+  isActiveContextQueryResponse,
   isCandidatesDiscoveredResponse,
   isMissedPathsQueryResponse,
   isReencounterQueryResponse,
+  isReencounterShownResponse,
   isSessionFinalizeResponse,
   isSignalsUpdatedResponse
 } from "../../shared/messages.js";
@@ -629,6 +635,113 @@ test("maps missing Session and atomic finalization failure responses", async () 
   assert.equal(await repository.getSessionFinalization("session-1"), null);
 });
 
+test("routes ACTIVE_CONTEXT_QUERY for unavailable and available contexts", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const router = createMessageRouter(repository);
+  const unavailableRequest = createActiveContextQueryMessage(
+    "request-active-unavailable"
+  );
+
+  const unavailable = await router.route(unavailableRequest);
+  assert.equal(isActiveContextQueryResponse(unavailable), true);
+  assert.deepEqual(unavailable, {
+    schemaVersion: SCHEMA_VERSION,
+    requestId: unavailableRequest.requestId,
+    ok: true,
+    data: {
+      status: ACTIVE_CONTEXT_STATUSES.UNAVAILABLE,
+      context: null
+    }
+  });
+
+  await repository.mergeDiscoveredCandidates({
+    sessionId: "session-1",
+    context: createDiscoveryContext(),
+    candidates: [createDiscoveryCandidate()],
+    discoveredAt: 200
+  });
+  const availableRequest = createActiveContextQueryMessage(
+    "request-active-available"
+  );
+  const available = await router.route(availableRequest);
+
+  assert.equal(isActiveContextQueryResponse(available), true);
+  assert.deepEqual(available, {
+    schemaVersion: SCHEMA_VERSION,
+    requestId: availableRequest.requestId,
+    ok: true,
+    data: {
+      status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+      context: createDiscoveryContext()
+    }
+  });
+  assert.deepEqual(await router.route(availableRequest), available);
+});
+
+test("rejects invalid ACTIVE_CONTEXT_QUERY payload and version before execution", async () => {
+  let executionCount = 0;
+  const router = createMessageRouter(
+    { async listMissedPaths() { return []; } },
+    {
+      activeContextQueryUseCase: {
+        async execute() {
+          executionCount += 1;
+          return {
+            status: ACTIVE_CONTEXT_STATUSES.UNAVAILABLE,
+            context: null
+          };
+        }
+      }
+    }
+  );
+  const request = createActiveContextQueryMessage("request-active-invalid");
+
+  const invalidPayload = await router.route({
+    ...request,
+    payload: { query: "must-not-be-read" }
+  });
+  assert.equal(executionCount, 0);
+  assert.deepEqual(invalidPayload.error, {
+    code: RESPONSE_ERROR_CODES.INVALID_REQUEST,
+    message: "Invalid ACTIVE_CONTEXT_QUERY payload.",
+    retryable: false
+  });
+
+  const invalidVersion = await router.route({
+    ...request,
+    schemaVersion: SCHEMA_VERSION + 1
+  });
+  assert.equal(executionCount, 0);
+  assert.equal(
+    invalidVersion.error.code,
+    RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED
+  );
+  assert.equal(invalidVersion.requestId, request.requestId);
+});
+
+test("maps ACTIVE_CONTEXT_QUERY storage failure and echoes requestId", async () => {
+  const router = createMessageRouter({
+    async listMissedPaths() {
+      return [];
+    },
+    async getActiveContext() {
+      throw new Error("simulated storage failure");
+    }
+  });
+  const request = createActiveContextQueryMessage("request-active-storage");
+
+  const response = await router.route(request);
+
+  assert.equal(response.requestId, request.requestId);
+  assert.deepEqual(response.error, {
+    code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+    message: "Unable to query the current SearchContext.",
+    retryable: true
+  });
+});
+
 test("returns persisted Missed Paths in a shared success response", async () => {
   const repository = createRepository(
     createTransactionalMemoryStorageAdapter()
@@ -938,4 +1051,156 @@ test("repeated RE_ENCOUNTER_QUERY requests remain idempotent", async () => {
   assert.deepEqual(second, first);
   assert.equal(executionCount, 2);
   assert.equal(first.requestId, request.requestId);
+});
+
+function createShownRequest(requestId = "request-shown") {
+  return createReencounterShownMessage(
+    {
+      missedPath: createMissedPath(),
+      score: 0.7,
+      reasons: [
+        {
+          code: "CONTEXT_MATCH",
+          label: "Context matched.",
+          contribution: 0.4
+        }
+      ]
+    },
+    createCurrentContext(),
+    10_000_000_100,
+    requestId
+  );
+}
+
+test("routes first and repeated RE_ENCOUNTER_SHOWN idempotently", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.saveMissedPath(createMissedPath());
+  await repository.mergeDiscoveredCandidates({
+    sessionId: "session-1",
+    context: createCurrentContext(),
+    candidates: [createDiscoveryCandidate()],
+    discoveredAt: 10_000_000_000
+  });
+  const router = createMessageRouter(repository);
+  const request = createShownRequest("request-shown-repeat");
+
+  const first = await router.route(request);
+  const second = await router.route(request);
+
+  assert.equal(isReencounterShownResponse(first), true);
+  assert.equal(first.requestId, request.requestId);
+  assert.equal(first.data.created, true);
+  assert.equal(second.data.created, false);
+  assert.equal((await repository.listReencounters()).length, 1);
+});
+
+test("RE_ENCOUNTER_SHOWN rejects invalid payload and unknown version", async () => {
+  let executionCount = 0;
+  const router = createMessageRouter(
+    { async listMissedPaths() { return []; } },
+    {
+      reencounterShownUseCase: {
+        async execute() {
+          executionCount += 1;
+          return {};
+        }
+      }
+    }
+  );
+  const request = createShownRequest("request-shown-invalid");
+  const invalid = await router.route({
+    ...request,
+    payload: { ...request.payload, shownAt: -1 }
+  });
+  const unknownVersion = await router.route({
+    ...request,
+    schemaVersion: SCHEMA_VERSION + 1
+  });
+
+  assert.equal(executionCount, 0);
+  assert.equal(invalid.error.code, RESPONSE_ERROR_CODES.INVALID_REQUEST);
+  assert.equal(invalid.requestId, request.requestId);
+  assert.equal(
+    unknownVersion.error.code,
+    RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED
+  );
+});
+
+test("RE_ENCOUNTER_SHOWN returns explicit unknown Missed Path error", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const router = createMessageRouter(repository);
+  const request = createShownRequest("request-shown-unknown");
+
+  const response = await router.route(request);
+
+  assert.equal(response.requestId, request.requestId);
+  assert.deepEqual(response.error, {
+    code: RESPONSE_ERROR_CODES.MISSED_PATH_NOT_FOUND,
+    message: "Missed Path not found: missed-1",
+    retryable: false
+  });
+});
+
+test("RE_ENCOUNTER_SHOWN rejects a late card from a stale context", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.saveMissedPath(createMissedPath());
+  await repository.mergeDiscoveredCandidates({
+    sessionId: "session-1",
+    context: createCurrentContext(),
+    candidates: [createDiscoveryCandidate()],
+    discoveredAt: 10_000_000_000
+  });
+  const router = createMessageRouter(repository);
+  const request = createReencounterShownMessage(
+    {
+      missedPath: createMissedPath(),
+      score: 0.7,
+      reasons: []
+    },
+    { ...createCurrentContext(), timestamp: 9_000 },
+    10_000_000_100,
+    "request-shown-stale"
+  );
+
+  const response = await router.route(request);
+
+  assert.equal(response.requestId, request.requestId);
+  assert.equal(
+    response.error.code,
+    RESPONSE_ERROR_CODES.REENCOUNTER_SHOWN_STALE
+  );
+  assert.equal((await repository.listReencounters()).length, 0);
+});
+
+test("RE_ENCOUNTER_SHOWN maps storage failure and echoes requestId", async () => {
+  const router = createMessageRouter(
+    { async listMissedPaths() { return []; } },
+    {
+      reencounterShownUseCase: {
+        async execute() {
+          throw new ReencounterShownError(
+            RESPONSE_ERROR_CODES.STORAGE_ERROR,
+            "Unable to persist shown.",
+            true
+          );
+        }
+      }
+    }
+  );
+  const request = createShownRequest("request-shown-storage");
+
+  const response = await router.route(request);
+
+  assert.equal(response.requestId, request.requestId);
+  assert.deepEqual(response.error, {
+    code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+    message: "Unable to persist shown.",
+    retryable: true
+  });
 });

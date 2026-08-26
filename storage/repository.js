@@ -4,6 +4,9 @@ import {
   SCHEMA_VERSION,
   isCandidateSignalsV1,
   isCandidateV1,
+  isMissedPathV1,
+  isReencounterFeedbackV1,
+  isReencounterRecordV1,
   isSearchContextV1
 } from "../shared/types.js";
 import { normalizeCandidateUrl } from "../shared/url.js";
@@ -11,6 +14,7 @@ import { normalizeCandidateUrl } from "../shared/url.js";
 export const REPOSITORY_SCHEMA_KEY = "meta:schema";
 
 export const REPOSITORY_KINDS = Object.freeze({
+  ACTIVE_CONTEXT: "active-context",
   CHOSEN: "chosen",
   MISSED_PATH: "missed-path",
   REENCOUNTER: "reencounter",
@@ -19,28 +23,8 @@ export const REPOSITORY_KINDS = Object.freeze({
   SETTINGS: "settings"
 });
 
+const ACTIVE_CONTEXT_ID = "current";
 const SETTINGS_ID = "current";
-const REASON_CODES = new Set([
-  "LONG_EXPOSURE",
-  "LONG_HOVER",
-  "REPEATED_HOVER",
-  "RETURN_VIEW",
-  "NOT_CLICKED",
-  "CONTEXT_MATCH"
-]);
-const MISSED_PATH_STATUSES = new Set([
-  "MISSED",
-  "ELIGIBLE",
-  "REENCOUNTERED",
-  "ARCHIVED"
-]);
-const REENCOUNTER_OUTCOMES = new Set([
-  "OPENED",
-  "LATER",
-  "DISMISSED",
-  "NOT_RELEVANT",
-  "DELETED"
-]);
 
 export class RepositoryVersionError extends Error {
   constructor(actualVersion) {
@@ -55,10 +39,10 @@ export class RepositoryVersionError extends Error {
 }
 
 export class RepositoryDataError extends Error {
-  constructor(message) {
+  constructor(message, code = "REPOSITORY_DATA_INVALID") {
     super(message);
     this.name = "RepositoryDataError";
-    this.code = "REPOSITORY_DATA_INVALID";
+    this.code = code;
   }
 }
 
@@ -92,25 +76,6 @@ function isUnitNumber(value) {
 
 function isStringList(value) {
   return Array.isArray(value) && value.every(isNonEmptyString);
-}
-
-function isReason(value) {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  const hasContribution = Object.hasOwn(value, "contribution");
-  return Boolean(
-    hasExactKeys(
-      value,
-      hasContribution
-        ? ["code", "label", "contribution"]
-        : ["code", "label"]
-    ) &&
-      REASON_CODES.has(value.code) &&
-      isNonEmptyString(value.label) &&
-      (!hasContribution || isFiniteNonNegativeNumber(value.contribution))
-  );
 }
 
 function isSessionCandidate(value, sessionId) {
@@ -153,6 +118,15 @@ function isSessionState(value) {
   return true;
 }
 
+function isActiveContextState(value) {
+  return Boolean(
+    hasExactKeys(value, ["sessionId", "context", "activatedAt"]) &&
+      isNonEmptyString(value.sessionId) &&
+      isSearchContextV1(value.context) &&
+      isFiniteNonNegativeNumber(value.activatedAt)
+  );
+}
+
 function isChosen(value) {
   return Boolean(
     hasExactKeys(value, ["id", "candidate", "context", "chosenAt"]) &&
@@ -160,67 +134,6 @@ function isChosen(value) {
       isCandidateV1(value.candidate) &&
       isSearchContextV1(value.context) &&
       isFiniteNonNegativeNumber(value.chosenAt)
-  );
-}
-
-function isMissedPath(value) {
-  return Boolean(
-    hasExactKeys(value, [
-      "id",
-      "candidate",
-      "context",
-      "score",
-      "reasons",
-      "status",
-      "createdAt"
-    ]) &&
-      isNonEmptyString(value.id) &&
-      isCandidateV1(value.candidate) &&
-      isSearchContextV1(value.context) &&
-      isUnitNumber(value.score) &&
-      Array.isArray(value.reasons) &&
-      value.reasons.every(isReason) &&
-      MISSED_PATH_STATUSES.has(value.status) &&
-      isFiniteNonNegativeNumber(value.createdAt)
-  );
-}
-
-function isReencounter(value) {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  const hasOutcome = Object.hasOwn(value, "outcome");
-  return Boolean(
-    hasExactKeys(
-      value,
-      hasOutcome
-        ? [
-            "id",
-            "missedPathId",
-            "triggerContext",
-            "score",
-            "reasons",
-            "shownAt",
-            "outcome"
-          ]
-        : [
-            "id",
-            "missedPathId",
-            "triggerContext",
-            "score",
-            "reasons",
-            "shownAt"
-          ]
-    ) &&
-      isNonEmptyString(value.id) &&
-      isNonEmptyString(value.missedPathId) &&
-      isSearchContextV1(value.triggerContext) &&
-      isUnitNumber(value.score) &&
-      Array.isArray(value.reasons) &&
-      value.reasons.every(isReason) &&
-      isFiniteNonNegativeNumber(value.shownAt) &&
-      (!hasOutcome || REENCOUNTER_OUTCOMES.has(value.outcome))
   );
 }
 
@@ -308,18 +221,10 @@ function assertAdapter(adapter) {
 export function createRepository(adapter) {
   assertAdapter(adapter);
 
-  async function ensureCompatibleVersion() {
+  async function hasCompatibleVersion() {
     const metadata = await adapter.get(REPOSITORY_SCHEMA_KEY);
     if (metadata === undefined) {
-      await adapter.commit({
-        puts: [
-          {
-            key: REPOSITORY_SCHEMA_KEY,
-            value: { schemaVersion: SCHEMA_VERSION }
-          }
-        ]
-      });
-      return;
+      return false;
     }
 
     if (
@@ -328,6 +233,21 @@ export function createRepository(adapter) {
     ) {
       throw new RepositoryVersionError(metadata?.schemaVersion);
     }
+    return true;
+  }
+
+  async function ensureCompatibleVersion() {
+    if (await hasCompatibleVersion()) {
+      return;
+    }
+    await adapter.commit({
+      puts: [
+        {
+          key: REPOSITORY_SCHEMA_KEY,
+          value: { schemaVersion: SCHEMA_VERSION }
+        }
+      ]
+    });
   }
 
   function validateStoredRecord(record, expectedKind, expectedId) {
@@ -508,6 +428,10 @@ export function createRepository(adapter) {
         REPOSITORY_KINDS.SESSION_FINALIZATION,
         discovery.sessionId
       );
+      const activeContextKey = recordKey(
+        REPOSITORY_KINDS.ACTIVE_CONTEXT,
+        ACTIVE_CONTEXT_ID
+      );
       const storedFinalization = await adapter.get(finalizationKey);
       if (storedFinalization !== undefined) {
         const finalization = validateStoredRecord(
@@ -605,23 +529,58 @@ export function createRepository(adapter) {
         acceptedCandidateIds.push(candidate.id);
       }
 
+      const storedActiveContext = await adapter.get(activeContextKey);
+      let activeContext = null;
+      if (storedActiveContext !== undefined) {
+        activeContext = validateStoredRecord(
+          storedActiveContext,
+          REPOSITORY_KINDS.ACTIVE_CONTEXT,
+          ACTIVE_CONTEXT_ID
+        );
+        if (!isActiveContextState(activeContext)) {
+          throw new RepositoryDataError("Stored active-context data is invalid.");
+        }
+        if (
+          activeContext.sessionId === discovery.sessionId &&
+          !isSameJson(activeContext.context, discovery.context)
+        ) {
+          throw new RepositoryDataError(
+            "Stored active context conflicts with its Session."
+          );
+        }
+      }
+
+      const puts = [];
       if (acceptedCandidateIds.length > 0) {
         session.updatedAt = Math.max(
           session.updatedAt,
           discovery.discoveredAt
         );
-        await adapter.commit({
-          puts: [
-            {
-              key: sessionKey,
-              value: createStoredRecord(
-                REPOSITORY_KINDS.SESSION,
-                discovery.sessionId,
-                session
-              )
-            }
-          ]
+        puts.push({
+          key: sessionKey,
+          value: createStoredRecord(
+            REPOSITORY_KINDS.SESSION,
+            discovery.sessionId,
+            session
+          )
         });
+      }
+      if (activeContext?.sessionId !== discovery.sessionId) {
+        puts.push({
+          key: activeContextKey,
+          value: createStoredRecord(
+            REPOSITORY_KINDS.ACTIVE_CONTEXT,
+            ACTIVE_CONTEXT_ID,
+            {
+              sessionId: discovery.sessionId,
+              context: discovery.context,
+              activatedAt: discovery.discoveredAt
+            }
+          )
+        });
+      }
+      if (puts.length > 0) {
+        await adapter.commit({ puts });
       }
 
       return {
@@ -636,6 +595,31 @@ export function createRepository(adapter) {
     },
     listSessions() {
       return listRecords(REPOSITORY_KINDS.SESSION, isSessionState);
+    },
+    async getActiveContext() {
+      const key = recordKey(
+        REPOSITORY_KINDS.ACTIVE_CONTEXT,
+        ACTIVE_CONTEXT_ID
+      );
+      if (!(await hasCompatibleVersion())) {
+        if ((await adapter.get(key)) !== undefined) {
+          throw new RepositoryVersionError(undefined);
+        }
+        return null;
+      }
+      const record = await adapter.get(key);
+      if (record === undefined) {
+        return null;
+      }
+      const data = validateStoredRecord(
+        record,
+        REPOSITORY_KINDS.ACTIVE_CONTEXT,
+        ACTIVE_CONTEXT_ID
+      );
+      if (!isActiveContextState(data)) {
+        throw new RepositoryDataError("Stored active-context data is invalid.");
+      }
+      return cloneJson(data);
     },
     async mergeCandidateSignalsSnapshot(update) {
       if (
@@ -823,12 +807,34 @@ export function createRepository(adapter) {
       });
       return true;
     },
-    deleteSession(sessionId) {
-      return deleteRecord(
+    async deleteSession(sessionId) {
+      const existing = await getRecord(
         REPOSITORY_KINDS.SESSION,
         sessionId,
         isSessionState
       );
+      if (existing === null) {
+        return false;
+      }
+      const activeContext = await getRecord(
+        REPOSITORY_KINDS.ACTIVE_CONTEXT,
+        ACTIVE_CONTEXT_ID,
+        isActiveContextState
+      );
+      await adapter.commit({
+        deletes: [
+          recordKey(REPOSITORY_KINDS.SESSION, sessionId),
+          ...(activeContext?.sessionId === sessionId
+            ? [
+                recordKey(
+                  REPOSITORY_KINDS.ACTIVE_CONTEXT,
+                  ACTIVE_CONTEXT_ID
+                )
+              ]
+            : [])
+        ]
+      });
+      return true;
     },
 
     getSessionFinalization(sessionId) {
@@ -852,7 +858,7 @@ export function createRepository(adapter) {
         !Array.isArray(finalization.chosen) ||
         !finalization.chosen.every(isChosen) ||
         !Array.isArray(finalization.missedPaths) ||
-        !finalization.missedPaths.every(isMissedPath)
+        !finalization.missedPaths.every(isMissedPathV1)
       ) {
         throw new RepositoryDataError("Invalid atomic session finalization data.");
       }
@@ -887,6 +893,24 @@ export function createRepository(adapter) {
         REPOSITORY_KINDS.SESSION_FINALIZATION,
         finalization.sessionId
       );
+      const activeContextKey = recordKey(
+        REPOSITORY_KINDS.ACTIVE_CONTEXT,
+        ACTIVE_CONTEXT_ID
+      );
+      const storedActiveContext = await adapter.get(activeContextKey);
+      let clearsActiveContext = false;
+      if (storedActiveContext !== undefined) {
+        const activeContext = validateStoredRecord(
+          storedActiveContext,
+          REPOSITORY_KINDS.ACTIVE_CONTEXT,
+          ACTIVE_CONTEXT_ID
+        );
+        if (!isActiveContextState(activeContext)) {
+          throw new RepositoryDataError("Stored active-context data is invalid.");
+        }
+        clearsActiveContext =
+          activeContext.sessionId === finalization.sessionId;
+      }
       const existingMarker = await adapter.get(markerKey);
       if (existingMarker !== undefined) {
         const marker = validateStoredRecord(
@@ -898,6 +922,9 @@ export function createRepository(adapter) {
           throw new RepositoryDataError(
             "Stored session-finalization data is invalid."
           );
+        }
+        if (clearsActiveContext) {
+          await adapter.commit({ deletes: [activeContextKey] });
         }
         return { created: false, finalization: cloneJson(marker) };
       }
@@ -923,7 +950,7 @@ export function createRepository(adapter) {
         const put = await assertNoConflictingRecord(
           REPOSITORY_KINDS.MISSED_PATH,
           missedPath,
-          isMissedPath
+          isMissedPathV1
         );
         if (put !== null) {
           puts.push(put);
@@ -938,7 +965,10 @@ export function createRepository(adapter) {
         )
       });
 
-      await adapter.commit({ puts });
+      await adapter.commit({
+        puts,
+        ...(clearsActiveContext ? { deletes: [activeContextKey] } : {})
+      });
       return { created: true, finalization: cloneJson(marker) };
     },
 
@@ -965,20 +995,20 @@ export function createRepository(adapter) {
         REPOSITORY_KINDS.MISSED_PATH,
         missedPath?.id,
         missedPath,
-        isMissedPath
+        isMissedPathV1
       );
     },
     getMissedPath(id) {
-      return getRecord(REPOSITORY_KINDS.MISSED_PATH, id, isMissedPath);
+      return getRecord(REPOSITORY_KINDS.MISSED_PATH, id, isMissedPathV1);
     },
     listMissedPaths() {
-      return listRecords(REPOSITORY_KINDS.MISSED_PATH, isMissedPath);
+      return listRecords(REPOSITORY_KINDS.MISSED_PATH, isMissedPathV1);
     },
     async deleteMissedPath(id) {
       const existing = await getRecord(
         REPOSITORY_KINDS.MISSED_PATH,
         id,
-        isMissedPath
+        isMissedPathV1
       );
       if (existing === null) {
         return false;
@@ -986,7 +1016,7 @@ export function createRepository(adapter) {
 
       const linkedReencounters = (await listRecords(
         REPOSITORY_KINDS.REENCOUNTER,
-        isReencounter
+        isReencounterRecordV1
       )).filter((reencounter) => reencounter.missedPathId === id);
       await adapter.commit({
         deletes: [
@@ -1004,17 +1034,182 @@ export function createRepository(adapter) {
         REPOSITORY_KINDS.REENCOUNTER,
         reencounter?.id,
         reencounter,
-        isReencounter
+        isReencounterRecordV1
       );
     },
+    async recordReencounterShown(reencounter) {
+      if (
+        !isReencounterRecordV1(reencounter) ||
+        Object.hasOwn(reencounter, "outcome")
+      ) {
+        throw new RepositoryDataError("Invalid Re-encounter shown data.");
+      }
+      await ensureCompatibleVersion();
+
+      const missedPathKey = recordKey(
+        REPOSITORY_KINDS.MISSED_PATH,
+        reencounter.missedPathId
+      );
+      const storedMissedPath = await adapter.get(missedPathKey);
+      if (storedMissedPath === undefined) {
+        throw new RepositoryDataError(
+          `Missed Path not found: ${reencounter.missedPathId}`,
+          "MISSED_PATH_NOT_FOUND"
+        );
+      }
+      const missedPath = validateStoredRecord(
+        storedMissedPath,
+        REPOSITORY_KINDS.MISSED_PATH,
+        reencounter.missedPathId
+      );
+      if (!isMissedPathV1(missedPath)) {
+        throw new RepositoryDataError("Stored missed-path data is invalid.");
+      }
+
+      const activeContextKey = recordKey(
+        REPOSITORY_KINDS.ACTIVE_CONTEXT,
+        ACTIVE_CONTEXT_ID
+      );
+      const storedActiveContext = await adapter.get(activeContextKey);
+      if (storedActiveContext === undefined) {
+        throw new RepositoryDataError(
+          "Re-encounter shown has no active SearchContext.",
+          "REENCOUNTER_SHOWN_STALE"
+        );
+      }
+      const activeContext = validateStoredRecord(
+        storedActiveContext,
+        REPOSITORY_KINDS.ACTIVE_CONTEXT,
+        ACTIVE_CONTEXT_ID
+      );
+      if (!isActiveContextState(activeContext)) {
+        throw new RepositoryDataError("Stored active-context data is invalid.");
+      }
+      if (!isSameJson(activeContext.context, reencounter.triggerContext)) {
+        throw new RepositoryDataError(
+          "Re-encounter shown belongs to a stale SearchContext.",
+          "REENCOUNTER_SHOWN_STALE"
+        );
+      }
+
+      const key = recordKey(REPOSITORY_KINDS.REENCOUNTER, reencounter.id);
+      const nextRecord = createStoredRecord(
+        REPOSITORY_KINDS.REENCOUNTER,
+        reencounter.id,
+        reencounter
+      );
+      const existingRecord = await adapter.get(key);
+      if (existingRecord !== undefined) {
+        const existing = validateStoredRecord(
+          existingRecord,
+          REPOSITORY_KINDS.REENCOUNTER,
+          reencounter.id
+        );
+        if (!isReencounterRecordV1(existing)) {
+          throw new RepositoryDataError("Stored reencounter data is invalid.");
+        }
+        if (isSameJson(existingRecord, nextRecord)) {
+          return {
+            reencounterId: reencounter.id,
+            missedPathId: reencounter.missedPathId,
+            shownAt: reencounter.shownAt,
+            created: false
+          };
+        }
+        throw new RepositoryDataError(
+          `Re-encounter shown identity conflicts: ${reencounter.id}`,
+          "REENCOUNTER_SHOWN_CONFLICT"
+        );
+      }
+
+      await adapter.commit({ puts: [{ key, value: nextRecord }] });
+      return {
+        reencounterId: reencounter.id,
+        missedPathId: reencounter.missedPathId,
+        shownAt: reencounter.shownAt,
+        created: true
+      };
+    },
+    async recordReencounterFeedback(feedback) {
+      if (!isReencounterFeedbackV1(feedback)) {
+        throw new RepositoryDataError("Invalid Re-encounter feedback data.");
+      }
+      await ensureCompatibleVersion();
+
+      const key = recordKey(
+        REPOSITORY_KINDS.REENCOUNTER,
+        feedback.reencounterId
+      );
+      const storedRecord = await adapter.get(key);
+      if (storedRecord === undefined) {
+        throw new RepositoryDataError(
+          `Re-encounter not found: ${feedback.reencounterId}`,
+          "REENCOUNTER_NOT_FOUND"
+        );
+      }
+      const existing = validateStoredRecord(
+        storedRecord,
+        REPOSITORY_KINDS.REENCOUNTER,
+        feedback.reencounterId
+      );
+      if (!isReencounterRecordV1(existing)) {
+        throw new RepositoryDataError("Stored reencounter data is invalid.");
+      }
+
+      if (Object.hasOwn(existing, "outcome")) {
+        if (existing.outcome !== feedback.outcome) {
+          throw new RepositoryDataError(
+            `Re-encounter feedback conflicts: ${feedback.reencounterId}`,
+            "REENCOUNTER_FEEDBACK_CONFLICT"
+          );
+        }
+        if (Object.hasOwn(existing, "feedbackAt")) {
+          return {
+            reencounterId: existing.id,
+            outcome: existing.outcome,
+            feedbackAt: existing.feedbackAt,
+            updated: false
+          };
+        }
+      }
+
+      const updated = {
+        ...existing,
+        outcome: feedback.outcome,
+        feedbackAt: feedback.feedbackAt
+      };
+      const nextRecord = createStoredRecord(
+        REPOSITORY_KINDS.REENCOUNTER,
+        existing.id,
+        updated
+      );
+      await adapter.commit({ puts: [{ key, value: nextRecord }] });
+      return {
+        reencounterId: updated.id,
+        outcome: updated.outcome,
+        feedbackAt: updated.feedbackAt,
+        updated: true
+      };
+    },
     getReencounter(id) {
-      return getRecord(REPOSITORY_KINDS.REENCOUNTER, id, isReencounter);
+      return getRecord(
+        REPOSITORY_KINDS.REENCOUNTER,
+        id,
+        isReencounterRecordV1
+      );
     },
     listReencounters() {
-      return listRecords(REPOSITORY_KINDS.REENCOUNTER, isReencounter);
+      return listRecords(
+        REPOSITORY_KINDS.REENCOUNTER,
+        isReencounterRecordV1
+      );
     },
     deleteReencounter(id) {
-      return deleteRecord(REPOSITORY_KINDS.REENCOUNTER, id, isReencounter);
+      return deleteRecord(
+        REPOSITORY_KINDS.REENCOUNTER,
+        id,
+        isReencounterRecordV1
+      );
     },
 
     saveSettings(settings) {
