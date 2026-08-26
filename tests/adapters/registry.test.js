@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   AdapterConflictError,
+  createRealSiteAdapterRegistry,
   createSiteAdapterRegistry
 } from "../../content/adapters/registry.js";
+import { createBilibiliDocumentFixture } from "./fixtures/bilibiliDom.js";
 
 const testUrl = new URL("https://example.invalid/search?q=robotics");
 const testDocument = {};
@@ -90,4 +92,41 @@ test("returns an idempotent observer cleanup", () => {
   cleanup();
   cleanup();
   assert.equal(cleanupCount, 1);
+});
+
+test("real-site registry matches only Bilibili search contexts", () => {
+  const fixture = createBilibiliDocumentFixture();
+  const registry = createRealSiteAdapterRegistry({
+    document: fixture.document,
+    sessionIdFactory: () => "registry-session"
+  });
+
+  assert.notEqual(
+    registry.resolve(
+      new URL("https://search.bilibili.com/all?keyword=robotics"),
+      fixture.document
+    ),
+    null
+  );
+  assert.equal(
+    registry.resolve(
+      new URL("https://search.bilibili.com/all"),
+      fixture.document
+    ),
+    null
+  );
+  assert.equal(
+    registry.resolve(
+      new URL("https://www.bilibili.com/?keyword=robotics"),
+      fixture.document
+    ),
+    null
+  );
+  assert.equal(
+    registry.resolve(
+      new URL("https://example.com/search?keyword=robotics"),
+      fixture.document
+    ),
+    null
+  );
 });

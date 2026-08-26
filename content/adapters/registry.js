@@ -1,6 +1,7 @@
 // @ts-check
 
 import { assertSiteAdapter } from "./types.js";
+import { createBilibiliSearchAdapter } from "./bilibiliSearchAdapter.js";
 
 export class AdapterConflictError extends Error {
   /**
@@ -79,4 +80,16 @@ export function createSiteAdapterRegistry(adapters = []) {
   }
 
   return Object.freeze({ resolve, observe });
+}
+
+/**
+ * Registry for the single approved real site. The local Demo Adapter remains
+ * opt-in and is intentionally not part of this real-site registry.
+ *
+ * @param {Parameters<typeof createBilibiliSearchAdapter>[0]} [options]
+ */
+export function createRealSiteAdapterRegistry(options = {}) {
+  return createSiteAdapterRegistry([
+    createBilibiliSearchAdapter(options)
+  ]);
 }

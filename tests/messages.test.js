@@ -4,14 +4,25 @@ import test from "node:test";
 import {
   MESSAGE_SCHEMA_VERSION,
   MESSAGE_TYPES,
+  RESPONSE_ERROR_CODES,
   SCHEMA_VERSION,
   createCandidateChosenMessage,
+  createErrorResponseMessage,
+  createMissedPathsQueryMessage,
   createPingMessage,
   createPongMessage,
+  createReencounterQueryMessage,
+  createSuccessResponseMessage,
   isCandidateChosenMessage,
+  isMissedPathsQueryMessage,
+  isMissedPathsQueryResponse,
   isPingMessage,
-  isPongMessage
+  isPongMessage,
+  isReencounterQueryMessage,
+  isReencounterQueryResponse,
+  isResponseMessage
 } from "../shared/messages.js";
+import { createFakeIndexedDB } from "./storage/fixtures/fakeIndexedDB.js";
 
 const ping = createPingMessage("side-panel", {
   requestId: "request-ping",
@@ -22,6 +33,18 @@ const chosen = createCandidateChosenMessage(
   { id: "candidate-1", sessionId: "session-1" },
   200,
   "request-chosen"
+);
+const missedPathsQuery = createMissedPathsQueryMessage("request-missed-paths");
+const reencounterContext = {
+  query: "robot navigation",
+  source: "local-demo",
+  timestamp: 1_000,
+  keywords: ["robot", "navigation"]
+};
+const reencounterQuery = createReencounterQueryMessage(
+  reencounterContext,
+  3,
+  "request-reencounter"
 );
 
 const messageCases = [
@@ -42,15 +65,29 @@ const messageCases = [
     message: chosen,
     validator: isCandidateChosenMessage,
     wrongType: MESSAGE_TYPES.PING
+  },
+  {
+    name: "MISSED_PATHS_QUERY",
+    message: missedPathsQuery,
+    validator: isMissedPathsQueryMessage,
+    wrongType: MESSAGE_TYPES.PING
+  },
+  {
+    name: "RE_ENCOUNTER_QUERY",
+    message: reencounterQuery,
+    validator: isReencounterQueryMessage,
+    wrongType: MESSAGE_TYPES.PING
   }
 ];
 
-test("keeps MESSAGE_TYPES frozen with only the current v1 messages", () => {
+test("keeps MESSAGE_TYPES frozen with the implemented v1 messages", () => {
   assert.equal(Object.isFrozen(MESSAGE_TYPES), true);
   assert.deepEqual(Object.keys(MESSAGE_TYPES).sort(), [
     "CANDIDATE_CHOSEN",
+    "MISSED_PATHS_QUERY",
     "PING",
-    "PONG"
+    "PONG",
+    "RE_ENCOUNTER_QUERY"
   ]);
 });
 
@@ -94,6 +131,111 @@ test("creates an exact CANDIDATE_CHOSEN that passes its validator", () => {
   assert.equal(isCandidateChosenMessage(chosen), true);
 });
 
+test("creates an exact MISSED_PATHS_QUERY with a strict empty payload", () => {
+  assert.deepEqual(missedPathsQuery, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.MISSED_PATHS_QUERY,
+    requestId: "request-missed-paths",
+    payload: {}
+  });
+  assert.equal(isMissedPathsQueryMessage(missedPathsQuery), true);
+  assert.throws(() => createMissedPathsQueryMessage(""), TypeError);
+  assert.equal(
+    isMissedPathsQueryMessage({
+      ...missedPathsQuery,
+      payload: { limit: 10 }
+    }),
+    false
+  );
+});
+
+test("creates an exact RE_ENCOUNTER_QUERY with strict context and limit", () => {
+  assert.deepEqual(reencounterQuery, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.RE_ENCOUNTER_QUERY,
+    requestId: "request-reencounter",
+    payload: {
+      context: reencounterContext,
+      limit: 3
+    }
+  });
+  assert.equal(isReencounterQueryMessage(reencounterQuery), true);
+  assert.throws(
+    () => createReencounterQueryMessage(reencounterContext, 0, "request-1"),
+    TypeError
+  );
+  assert.throws(
+    () => createReencounterQueryMessage(reencounterContext, 4, "request-1"),
+    TypeError
+  );
+  assert.throws(
+    () => createReencounterQueryMessage(reencounterContext, 3, ""),
+    TypeError
+  );
+  assert.equal(
+    isReencounterQueryMessage({
+      ...reencounterQuery,
+      payload: { ...reencounterQuery.payload, extra: true }
+    }),
+    false
+  );
+});
+
+test("shared ResponseMessage factories create strict success and error shapes", () => {
+  const success = createSuccessResponseMessage("request-success", {
+    missedPaths: []
+  });
+  const error = createErrorResponseMessage("request-error", {
+    code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+    message: "Unable to query local Missed Paths.",
+    retryable: true
+  });
+
+  assert.deepEqual(success, {
+    schemaVersion: SCHEMA_VERSION,
+    requestId: "request-success",
+    ok: true,
+    data: { missedPaths: [] }
+  });
+  assert.deepEqual(error, {
+    schemaVersion: SCHEMA_VERSION,
+    requestId: "request-error",
+    ok: false,
+    error: {
+      code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+      message: "Unable to query local Missed Paths.",
+      retryable: true
+    }
+  });
+  assert.equal(isResponseMessage(success), true);
+  assert.equal(isResponseMessage(error), true);
+  assert.equal(isMissedPathsQueryResponse(success), true);
+  assert.equal(isMissedPathsQueryResponse(error), true);
+  assert.equal(
+    isReencounterQueryResponse(
+      createSuccessResponseMessage("request-reencounter-response", {
+        reencounters: []
+      })
+    ),
+    true
+  );
+  assert.equal(isResponseMessage({ ...success, schemaVersion: 2 }), false);
+  assert.equal(isResponseMessage({ ...success, extra: true }), false);
+  assert.equal(
+    isResponseMessage({
+      ...error,
+      error: { ...error.error, retryable: "yes" }
+    }),
+    false
+  );
+  assert.equal(
+    isMissedPathsQueryResponse(
+      createSuccessResponseMessage("request-wrong-data", { paths: [] })
+    ),
+    false
+  );
+});
+
 test("keeps MESSAGE_SCHEMA_VERSION as the shared constant alias", () => {
   assert.equal(MESSAGE_SCHEMA_VERSION, SCHEMA_VERSION);
   assert.equal(SCHEMA_VERSION, 1);
@@ -120,13 +262,17 @@ test("all message validators reject missing, wrong, or extra envelope fields", (
 test("all message validators reject extra or missing payload fields", () => {
   for (const { validator, message } of messageCases) {
     const firstPayloadKey = Object.keys(message.payload)[0];
-    const payloadWithoutFirstKey = Object.fromEntries(
-      Object.entries(message.payload).filter(([key]) => key !== firstPayloadKey)
-    );
-    assert.equal(
-      validator({ ...message, payload: payloadWithoutFirstKey }),
-      false
-    );
+    if (firstPayloadKey !== undefined) {
+      const payloadWithoutFirstKey = Object.fromEntries(
+        Object.entries(message.payload).filter(
+          ([key]) => key !== firstPayloadKey
+        )
+      );
+      assert.equal(
+        validator({ ...message, payload: payloadWithoutFirstKey }),
+        false
+      );
+    }
     assert.equal(
       validator({ ...message, payload: { ...message.payload, extra: true } }),
       false
@@ -275,5 +421,99 @@ test("Service Worker still answers a valid PING with a correlated PONG", async (
     assert.equal(response.payload.responder, "service-worker");
   } finally {
     delete globalThis.chrome;
+  }
+});
+
+test("Service Worker routes MISSED_PATHS_QUERY without Side Panel storage access", async () => {
+  let messageListener;
+  globalThis.indexedDB = createFakeIndexedDB();
+  globalThis.chrome = {
+    runtime: {
+      onInstalled: {
+        addListener() {}
+      },
+      onMessage: {
+        addListener(listener) {
+          messageListener = listener;
+        }
+      }
+    },
+    sidePanel: {
+      setPanelBehavior() {
+        return Promise.resolve();
+      }
+    }
+  };
+
+  try {
+    await import("../background/serviceWorker.js?missed-paths-query-test");
+    const request = createMissedPathsQueryMessage("request-side-panel-query");
+    let resolveResponse;
+    const responsePromise = new Promise((resolve) => {
+      resolveResponse = resolve;
+    });
+    const listenerResult = messageListener(
+      request,
+      { url: "chrome-extension://test/sidepanel/index.html" },
+      resolveResponse
+    );
+
+    assert.equal(listenerResult, true);
+    const response = await responsePromise;
+    assert.equal(isMissedPathsQueryResponse(response), true);
+    assert.equal(response.requestId, request.requestId);
+    assert.deepEqual(response.data, { missedPaths: [] });
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
+test("Service Worker routes RE_ENCOUNTER_QUERY through the read-only use case", async () => {
+  let messageListener;
+  globalThis.indexedDB = createFakeIndexedDB();
+  globalThis.chrome = {
+    runtime: {
+      onInstalled: {
+        addListener() {}
+      },
+      onMessage: {
+        addListener(listener) {
+          messageListener = listener;
+        }
+      }
+    },
+    sidePanel: {
+      setPanelBehavior() {
+        return Promise.resolve();
+      }
+    }
+  };
+
+  try {
+    await import("../background/serviceWorker.js?reencounter-query-test");
+    const request = createReencounterQueryMessage(
+      reencounterContext,
+      3,
+      "request-service-worker-reencounter"
+    );
+    let resolveResponse;
+    const responsePromise = new Promise((resolve) => {
+      resolveResponse = resolve;
+    });
+    const listenerResult = messageListener(
+      request,
+      { url: "chrome-extension://test/sidepanel/index.html" },
+      resolveResponse
+    );
+
+    assert.equal(listenerResult, true);
+    const response = await responsePromise;
+    assert.equal(isReencounterQueryResponse(response), true);
+    assert.equal(response.requestId, request.requestId);
+    assert.deepEqual(response.data, { reencounters: [] });
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
   }
 });

@@ -17,7 +17,11 @@ check(
   JSON.stringify(manifest.permissions) === JSON.stringify(["sidePanel"]),
   "permissions must contain only sidePanel"
 );
-check(!("host_permissions" in manifest), "host_permissions must be absent");
+check(
+  JSON.stringify(manifest.host_permissions) ===
+    JSON.stringify(["https://search.bilibili.com/*"]),
+  "host_permissions must contain only https://search.bilibili.com/*"
+);
 check(!("content_scripts" in manifest), "content_scripts must be absent");
 
 const requiredPaths = [

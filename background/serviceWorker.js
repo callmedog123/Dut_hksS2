@@ -1,7 +1,41 @@
 import {
+  MESSAGE_TYPES,
+  RESPONSE_ERROR_CODES,
+  createErrorResponseMessage,
   createPongMessage,
+  createSuccessResponseMessage,
+  isCandidateChosenMessage,
   isPingMessage
 } from "../shared/messages.js";
+import { createIndexedDbStorageAdapter } from "../storage/indexedDbStorageAdapter.js";
+import { createRepository } from "../storage/repository.js";
+import { createMessageRouter } from "./messageRouter.js";
+import { createSessionManager } from "./sessionManager.js";
+
+let repository;
+function getRepository() {
+  if (repository === undefined) {
+    repository = createRepository(createIndexedDbStorageAdapter());
+  }
+  return repository;
+}
+
+let sessionManager;
+function getSessionManager() {
+  if (sessionManager === undefined) {
+    sessionManager = createSessionManager(getRepository());
+  }
+  return sessionManager;
+}
+
+const messageRouter = createMessageRouter({
+  listMissedPaths() {
+    return getRepository().listMissedPaths();
+  },
+  listReencounters() {
+    return getRepository().listReencounters();
+  }
+});
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel
@@ -15,16 +49,54 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!isPingMessage(message)) {
+  if (isPingMessage(message)) {
+    const response = createPongMessage(message, "service-worker");
+    console.info("[The Unclicked] PING received.", {
+      requestId: message.requestId,
+      source: message.payload.source,
+      senderUrl: sender.url ?? null
+    });
+    sendResponse(response);
     return false;
   }
 
-  const response = createPongMessage(message, "service-worker");
-  console.info("[The Unclicked] PING received.", {
-    requestId: message.requestId,
-    source: message.payload.source,
-    senderUrl: sender.url ?? null
-  });
-  sendResponse(response);
-  return false;
+  if (isCandidateChosenMessage(message)) {
+    getSessionManager()
+      .recordCandidateChosen(
+        message.payload.sessionId,
+        message.payload.candidateId,
+        message.payload.chosenAt
+      )
+      .then((candidateChosen) => {
+        sendResponse(
+          createSuccessResponseMessage(message.requestId, {
+            candidateChosen
+          })
+        );
+      })
+      .catch((error) => {
+        console.error(
+          "[The Unclicked] Failed to persist CANDIDATE_CHOSEN.",
+          error
+        );
+        sendResponse(
+          createErrorResponseMessage(message.requestId, {
+            code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+            message: "Unable to persist the chosen Candidate.",
+            retryable: true
+          })
+        );
+      });
+    return true;
+  }
+
+  if (
+    message?.type !== MESSAGE_TYPES.MISSED_PATHS_QUERY &&
+    message?.type !== MESSAGE_TYPES.RE_ENCOUNTER_QUERY
+  ) {
+    return false;
+  }
+
+  messageRouter.route(message).then(sendResponse);
+  return true;
 });

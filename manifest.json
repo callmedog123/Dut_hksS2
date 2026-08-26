@@ -7,6 +7,9 @@
   "permissions": [
     "sidePanel"
   ],
+  "host_permissions": [
+    "https://search.bilibili.com/*"
+  ],
   "background": {
     "service_worker": "background/serviceWorker.js",
     "type": "module"

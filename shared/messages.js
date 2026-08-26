@@ -1,13 +1,22 @@
 // @ts-check
 
-import { SCHEMA_VERSION } from "./types.js";
+import { SCHEMA_VERSION, isSearchContextV1 } from "./types.js";
 
 export { SCHEMA_VERSION, SCHEMA_VERSION as MESSAGE_SCHEMA_VERSION };
 
 export const MESSAGE_TYPES = Object.freeze({
   CANDIDATE_CHOSEN: "CANDIDATE_CHOSEN",
+  MISSED_PATHS_QUERY: "MISSED_PATHS_QUERY",
   PING: "PING",
-  PONG: "PONG"
+  PONG: "PONG",
+  RE_ENCOUNTER_QUERY: "RE_ENCOUNTER_QUERY"
+});
+
+export const RESPONSE_ERROR_CODES = Object.freeze({
+  INVALID_REQUEST: "INVALID_REQUEST",
+  REENCOUNTER_QUERY_FAILED: "REENCOUNTER_QUERY_FAILED",
+  SCHEMA_VERSION_UNSUPPORTED: "SCHEMA_VERSION_UNSUPPORTED",
+  STORAGE_ERROR: "STORAGE_ERROR"
 });
 
 /**
@@ -29,6 +38,40 @@ export const MESSAGE_TYPES = Object.freeze({
  *   receivedSentAt: number,
  *   respondedAt: number
  * }} payload
+ */
+
+/**
+ * @typedef {object} MissedPathsQueryMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.MISSED_PATHS_QUERY} type
+ * @property {string} requestId
+ * @property {Record<string, never>} payload
+ */
+
+/**
+ * @typedef {object} ReencounterQueryMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.RE_ENCOUNTER_QUERY} type
+ * @property {string} requestId
+ * @property {{
+ *   context: import("./types.js").SearchContextV1,
+ *   limit: number
+ * }} payload
+ */
+
+/**
+ * @template T
+ * @typedef {{
+ *   schemaVersion: typeof SCHEMA_VERSION,
+ *   requestId: string,
+ *   ok: true,
+ *   data: T
+ * } | {
+ *   schemaVersion: typeof SCHEMA_VERSION,
+ *   requestId: string,
+ *   ok: false,
+ *   error: {code: string, message: string, retryable: boolean}
+ * }} ResponseMessage
  */
 
 /**
@@ -62,6 +105,27 @@ const CANDIDATE_CHOSEN_PAYLOAD_KEYS = Object.freeze([
   "sessionId",
   "clicked",
   "chosenAt"
+]);
+const REENCOUNTER_QUERY_PAYLOAD_KEYS = Object.freeze([
+  "context",
+  "limit"
+]);
+const SUCCESS_RESPONSE_KEYS = Object.freeze([
+  "schemaVersion",
+  "requestId",
+  "ok",
+  "data"
+]);
+const ERROR_RESPONSE_KEYS = Object.freeze([
+  "schemaVersion",
+  "requestId",
+  "ok",
+  "error"
+]);
+const RESPONSE_ERROR_KEYS = Object.freeze([
+  "code",
+  "message",
+  "retryable"
 ]);
 
 function isRecord(value) {
@@ -274,5 +338,177 @@ export function isCandidateChosenMessage(message) {
       isNonEmptyString(message.payload.sessionId) &&
       message.payload.clicked === true &&
       isFiniteNumber(message.payload.chosenAt)
+  );
+}
+
+/**
+ * @param {string} [requestId]
+ * @returns {MissedPathsQueryMessageV1}
+ */
+export function createMissedPathsQueryMessage(requestId = createRequestId()) {
+  requireRequestId(requestId, "MISSED_PATHS_QUERY");
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.MISSED_PATHS_QUERY,
+    requestId,
+    payload: {}
+  };
+  if (!isMissedPathsQueryMessage(message)) {
+    throw new TypeError("Failed to create a valid MISSED_PATHS_QUERY message.");
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is MissedPathsQueryMessageV1}
+ */
+export function isMissedPathsQueryMessage(message) {
+  return Boolean(
+    hasValidEnvelope(message, MESSAGE_TYPES.MISSED_PATHS_QUERY) &&
+      hasExactKeys(message.payload, [])
+  );
+}
+
+/**
+ * @param {import("./types.js").SearchContextV1} context
+ * @param {number} limit
+ * @param {string} [requestId]
+ * @returns {ReencounterQueryMessageV1}
+ */
+export function createReencounterQueryMessage(
+  context,
+  limit,
+  requestId = createRequestId()
+) {
+  requireRequestId(requestId, "RE_ENCOUNTER_QUERY");
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.RE_ENCOUNTER_QUERY,
+    requestId,
+    payload: { context, limit }
+  };
+  if (!isReencounterQueryMessage(message)) {
+    throw new TypeError("Failed to create a valid RE_ENCOUNTER_QUERY message.");
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is ReencounterQueryMessageV1}
+ */
+export function isReencounterQueryMessage(message) {
+  return Boolean(
+    hasValidEnvelope(message, MESSAGE_TYPES.RE_ENCOUNTER_QUERY) &&
+      hasExactKeys(message.payload, REENCOUNTER_QUERY_PAYLOAD_KEYS) &&
+      isSearchContextV1(message.payload.context) &&
+      Number.isInteger(message.payload.limit) &&
+      message.payload.limit >= 1 &&
+      message.payload.limit <= 3
+  );
+}
+
+/**
+ * @template T
+ * @param {string} requestId
+ * @param {T} data
+ * @returns {ResponseMessage<T>}
+ */
+export function createSuccessResponseMessage(requestId, data) {
+  requireRequestId(requestId, "Response");
+  if (data === undefined) {
+    throw new TypeError("Success response data must be defined.");
+  }
+  const response = {
+    schemaVersion: SCHEMA_VERSION,
+    requestId,
+    ok: true,
+    data
+  };
+  if (!isResponseMessage(response)) {
+    throw new TypeError("Failed to create a valid success response.");
+  }
+  return response;
+}
+
+/**
+ * @param {string} requestId
+ * @param {{code: string, message: string, retryable: boolean}} error
+ * @returns {ResponseMessage<never>}
+ */
+export function createErrorResponseMessage(requestId, error) {
+  requireRequestId(requestId, "Response");
+  const response = {
+    schemaVersion: SCHEMA_VERSION,
+    requestId,
+    ok: false,
+    error
+  };
+  if (!isResponseMessage(response)) {
+    throw new TypeError("Failed to create a valid error response.");
+  }
+  return response;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is ResponseMessage<unknown>}
+ */
+export function isResponseMessage(message) {
+  if (!isRecord(message) || message.schemaVersion !== SCHEMA_VERSION) {
+    return false;
+  }
+  if (!isNonEmptyString(message.requestId)) {
+    return false;
+  }
+  if (message.ok === true) {
+    return hasExactKeys(message, SUCCESS_RESPONSE_KEYS) &&
+      message.data !== undefined;
+  }
+  return Boolean(
+    message.ok === false &&
+      hasExactKeys(message, ERROR_RESPONSE_KEYS) &&
+      hasExactKeys(message.error, RESPONSE_ERROR_KEYS) &&
+      isNonEmptyString(message.error.code) &&
+      isNonEmptyString(message.error.message) &&
+      typeof message.error.retryable === "boolean"
+  );
+}
+
+/**
+ * Validate the query-specific response data without duplicating Repository DTO
+ * validation. Repository remains the authority for each MissedPath record.
+ *
+ * @param {unknown} message
+ * @returns {boolean}
+ */
+export function isMissedPathsQueryResponse(message) {
+  if (!isResponseMessage(message)) {
+    return false;
+  }
+  if (message.ok === false) {
+    return true;
+  }
+  return Boolean(
+    hasExactKeys(message.data, ["missedPaths"]) &&
+      Array.isArray(message.data.missedPaths)
+  );
+}
+
+/**
+ * @param {unknown} message
+ * @returns {boolean}
+ */
+export function isReencounterQueryResponse(message) {
+  if (!isResponseMessage(message)) {
+    return false;
+  }
+  if (message.ok === false) {
+    return true;
+  }
+  return Boolean(
+    hasExactKeys(message.data, ["reencounters"]) &&
+      Array.isArray(message.data.reencounters)
   );
 }
