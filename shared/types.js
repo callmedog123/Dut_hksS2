@@ -41,11 +41,28 @@ export const REENCOUNTER_FEEDBACK_OUTCOMES = Object.freeze({
   OPENED: REENCOUNTER_OUTCOMES.OPENED
 });
 
+export const DEFAULT_SETTINGS_V1 = Object.freeze({
+  enabled: true,
+  allowlist: Object.freeze([]),
+  blocklist: Object.freeze([]),
+  thresholds: Object.freeze({ consideration: 0.55, reencounter: 0.6 }),
+  demoMode: false
+});
+
 /** @typedef {typeof CONSIDERATION_REASON_CODES[keyof typeof CONSIDERATION_REASON_CODES]} ConsiderationReasonCodeV1 */
 /** @typedef {typeof MISSED_PATH_STATUSES[keyof typeof MISSED_PATH_STATUSES]} MissedPathStatusV1 */
 /** @typedef {typeof REENCOUNTER_REASON_CODES[keyof typeof REENCOUNTER_REASON_CODES]} ReencounterReasonCodeV1 */
 /** @typedef {typeof REENCOUNTER_OUTCOMES[keyof typeof REENCOUNTER_OUTCOMES]} ReencounterOutcomeV1 */
 /** @typedef {typeof REENCOUNTER_FEEDBACK_OUTCOMES[keyof typeof REENCOUNTER_FEEDBACK_OUTCOMES]} ReencounterFeedbackOutcomeV1 */
+
+/**
+ * @typedef {object} SettingsV1
+ * @property {boolean} enabled
+ * @property {readonly string[]} allowlist
+ * @property {readonly string[]} blocklist
+ * @property {{consideration: number, reencounter: number}} thresholds
+ * @property {boolean} demoMode
+ */
 
 /**
  * A normalized result candidate emitted by a Site Adapter.
@@ -216,6 +233,13 @@ const REENCOUNTER_FEEDBACK_KEYS = Object.freeze([
   "outcome",
   "feedbackAt"
 ]);
+const SETTINGS_KEYS = Object.freeze([
+  "enabled",
+  "allowlist",
+  "blocklist",
+  "thresholds",
+  "demoMode"
+]);
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -247,6 +271,10 @@ function isFiniteNumber(value) {
 
 function isUnitNumber(value) {
   return isFiniteNonNegativeNumber(value) && value <= 1;
+}
+
+function isStringList(value) {
+  return Array.isArray(value) && value.every(isNonEmptyString);
 }
 
 function isConstantValue(constants, value) {
@@ -440,5 +468,22 @@ export function isReencounterFeedbackV1(value) {
       isNonEmptyString(value.reencounterId) &&
       isConstantValue(REENCOUNTER_FEEDBACK_OUTCOMES, value.outcome) &&
       isFiniteNonNegativeNumber(value.feedbackAt)
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is SettingsV1}
+ */
+export function isSettingsV1(value) {
+  return Boolean(
+    hasExactKeys(value, SETTINGS_KEYS) &&
+      typeof value.enabled === "boolean" &&
+      isStringList(value.allowlist) &&
+      isStringList(value.blocklist) &&
+      hasExactKeys(value.thresholds, ["consideration", "reencounter"]) &&
+      isUnitNumber(value.thresholds.consideration) &&
+      isUnitNumber(value.thresholds.reencounter) &&
+      typeof value.demoMode === "boolean"
   );
 }

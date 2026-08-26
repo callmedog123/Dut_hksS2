@@ -4,15 +4,19 @@ import {
   ACTIVE_CONTEXT_STATUSES,
   REENCOUNTER_FEEDBACK_OUTCOMES,
   createActiveContextQueryMessage,
+  createMissedPathDeleteMessage,
   createMissedPathsQueryMessage,
   createReencounterQueryMessage,
   createReencounterFeedbackMessage,
   createReencounterShownMessage,
+  createSettingsUpdateMessage,
   isActiveContextQueryResponse,
+  isMissedPathDeleteResponse,
   isMissedPathsQueryResponse,
   isReencounterQueryResponse,
   isReencounterFeedbackResponse,
-  isReencounterShownResponse
+  isReencounterShownResponse,
+  isSettingsUpdateResponse
 } from "../shared/messages.js";
 import { normalizeCandidateUrl } from "../shared/url.js";
 
@@ -205,8 +209,18 @@ export function createSidePanelApp({
     documentRef,
     "reencounter-retry-button"
   );
+  const settingsStatusElement = requireElement(documentRef, "settings-status");
+  const pauseCollectionButton = requireElement(
+    documentRef,
+    "pause-collection-button"
+  );
+  const resumeCollectionButton = requireElement(
+    documentRef,
+    "resume-collection-button"
+  );
   let activeMissedPathsRequestId = null;
   let contextLoadGeneration = 0;
+  let currentMissedPathViewModels = [];
 
   function setState(state, message, retryable = false) {
     statusElement.setAttribute("data-state", state);
@@ -216,6 +230,7 @@ export function createSidePanelApp({
   }
 
   function clearResults() {
+    currentMissedPathViewModels = [];
     cardListElement.replaceChildren();
     missedCountElement.textContent = "0";
     emptyElement.hidden = true;
@@ -280,6 +295,27 @@ export function createSidePanelApp({
       reasonBox.appendChild(reasonList);
       card.appendChild(reasonBox);
     }
+
+    const deleteStatus = documentRef.createElement("p");
+    deleteStatus.className = "delete-status";
+    deleteStatus.setAttribute("data-state", "idle");
+    deleteStatus.textContent = "";
+
+    const actions = documentRef.createElement("div");
+    actions.className = "card-actions";
+    const deleteButton = documentRef.createElement("button");
+    deleteButton.setAttribute("type", "button");
+    deleteButton.setAttribute("data-action", "delete-missed-path");
+    deleteButton.className = "btn btn-quiet delete-button";
+    deleteButton.textContent = "删除记录";
+    deleteButton.addEventListener("click", () => {
+      if (!deleteButton.disabled) {
+        submitMissedPathDelete(viewModel.id, deleteButton, deleteStatus);
+      }
+    });
+    actions.appendChild(deleteButton);
+    card.appendChild(deleteStatus);
+    card.appendChild(actions);
 
     return card;
   }
@@ -420,6 +456,11 @@ export function createSidePanelApp({
               ? "已延后，本地冷却已更新。"
               : "已记录为不相关。";
         updateButtons();
+      },
+      openFailed() {
+        feedbackStatus.setAttribute("data-state", "error");
+        feedbackStatus.textContent = "反馈已记录，但链接未能打开。";
+        updateButtons();
       }
     });
 
@@ -435,6 +476,7 @@ export function createSidePanelApp({
   }
 
   function renderSuccess(viewModels) {
+    currentMissedPathViewModels = [...viewModels];
     cardListElement.replaceChildren(
       ...viewModels.map((viewModel) => createCard(viewModel))
     );
@@ -516,9 +558,22 @@ export function createSidePanelApp({
     reencounterRetryButton.hidden = !retryable;
   }
 
-  function renderReencounterSuccess(viewModels) {
+  function renderReencounterSuccess(viewModels, generation) {
+    const controllers = viewModels.map((viewModel) =>
+      createReencounterCard(
+        viewModel,
+        (controller, outcome, selectedViewModel) => {
+          submitReencounterFeedback(
+            controller,
+            outcome,
+            selectedViewModel,
+            generation
+          );
+        }
+      )
+    );
     reencounterListElement.replaceChildren(
-      ...viewModels.map((viewModel) => createReencounterCard(viewModel))
+      ...controllers.map((controller) => controller.element)
     );
     reencounterListElement.setAttribute("aria-busy", "false");
     reencounterEmptyElement.hidden = viewModels.length !== 0;
@@ -532,9 +587,174 @@ export function createSidePanelApp({
         ? "当前情境下没有需要重逢的余路。"
         : `找到 ${viewModels.length} 条情境化重逢。`;
     reencounterRetryButton.hidden = true;
+    return new Map(
+      controllers.map((controller, index) => [
+        viewModels[index].id,
+        controller
+      ])
+    );
   }
 
-  function reportReencountersShown(reencounters, context, generation) {
+  function submitMissedPathDelete(missedPathId, button, deleteStatus) {
+    button.disabled = true;
+    deleteStatus.setAttribute("data-state", "pending");
+    deleteStatus.textContent = "正在删除…";
+    let request;
+    try {
+      request = createMissedPathDeleteMessage(missedPathId, now());
+      runtime.sendMessage(request, (response) => {
+        const runtimeError = runtime.lastError;
+        if (
+          runtimeError ||
+          !isMissedPathDeleteResponse(response) ||
+          response.requestId !== request.requestId ||
+          response.ok === false ||
+          response.data.missedPathId !== missedPathId
+        ) {
+          button.disabled = false;
+          deleteStatus.setAttribute("data-state", "error");
+          deleteStatus.textContent = "删除失败，请重试。";
+          return;
+        }
+
+        renderSuccess(
+          currentMissedPathViewModels.filter(
+            (viewModel) => viewModel.id !== missedPathId
+          )
+        );
+        loadContextualReencounters();
+      });
+    } catch {
+      button.disabled = false;
+      deleteStatus.setAttribute("data-state", "error");
+      deleteStatus.textContent = "删除失败，请重试。";
+      return null;
+    }
+    return request;
+  }
+
+  function submitSettingsUpdate(enabled) {
+    pauseCollectionButton.disabled = true;
+    resumeCollectionButton.disabled = true;
+    settingsStatusElement.setAttribute("data-state", "pending");
+    settingsStatusElement.textContent = enabled
+      ? "正在恢复采集…"
+      : "正在暂停采集…";
+    let request;
+    try {
+      request = createSettingsUpdateMessage(enabled, now());
+      runtime.sendMessage(request, (response) => {
+        const runtimeError = runtime.lastError;
+        if (
+          runtimeError ||
+          !isSettingsUpdateResponse(response) ||
+          response.requestId !== request.requestId ||
+          response.ok === false ||
+          response.data.settings.enabled !== enabled
+        ) {
+          pauseCollectionButton.disabled = false;
+          resumeCollectionButton.disabled = false;
+          settingsStatusElement.setAttribute("data-state", "error");
+          settingsStatusElement.textContent = "设置保存失败，请重试。";
+          return;
+        }
+        pauseCollectionButton.disabled = false;
+        resumeCollectionButton.disabled = false;
+        settingsStatusElement.setAttribute("data-state", "success");
+        settingsStatusElement.textContent = enabled
+          ? "采集已恢复。"
+          : "采集已暂停，已有数据仍可查看和删除。";
+      });
+    } catch {
+      pauseCollectionButton.disabled = false;
+      resumeCollectionButton.disabled = false;
+      settingsStatusElement.setAttribute("data-state", "error");
+      settingsStatusElement.textContent = "设置保存失败，请重试。";
+      return null;
+    }
+    return request;
+  }
+
+  function submitReencounterFeedback(
+    controller,
+    outcome,
+    viewModel,
+    generation
+  ) {
+    if (
+      generation !== contextLoadGeneration ||
+      typeof controller.reencounterId !== "string" ||
+      !controller.beginFeedback()
+    ) {
+      return null;
+    }
+
+    const normalizedUrl = outcome === REENCOUNTER_FEEDBACK_OUTCOMES.OPENED
+      ? normalizeCandidateUrl(viewModel.url)
+      : null;
+    if (
+      outcome === REENCOUNTER_FEEDBACK_OUTCOMES.OPENED &&
+      normalizedUrl === null
+    ) {
+      controller.feedbackFailed(outcome, "链接不安全或无效，未记录为打开。");
+      return null;
+    }
+
+    let request;
+    try {
+      request = createReencounterFeedbackMessage(
+        controller.reencounterId,
+        outcome,
+        now()
+      );
+      runtime.sendMessage(request, (response) => {
+        if (generation !== contextLoadGeneration) {
+          return;
+        }
+        const runtimeError = runtime.lastError;
+        if (
+          runtimeError ||
+          !isReencounterFeedbackResponse(response) ||
+          response.requestId !== request.requestId ||
+          response.ok === false ||
+          response.data.reencounterId !== controller.reencounterId ||
+          response.data.outcome !== outcome
+        ) {
+          controller.feedbackFailed(outcome);
+          return;
+        }
+
+        controller.feedbackSucceeded(outcome);
+        if (normalizedUrl !== null) {
+          try {
+            const openResult = openUrl(normalizedUrl);
+            if (openResult === false || openResult === null) {
+              controller.openFailed();
+            } else if (
+              typeof openResult === "object" &&
+              openResult !== null &&
+              typeof openResult.then === "function"
+            ) {
+              Promise.resolve(openResult).catch(() => controller.openFailed());
+            }
+          } catch {
+            controller.openFailed();
+          }
+        }
+      });
+    } catch {
+      controller.feedbackFailed(outcome);
+      return null;
+    }
+    return request;
+  }
+
+  function reportReencountersShown(
+    reencounters,
+    context,
+    generation,
+    controllers
+  ) {
     if (reencounters.length === 0 || generation !== contextLoadGeneration) {
       return;
     }
@@ -549,6 +769,10 @@ export function createSidePanelApp({
     }
 
     for (const reencounter of reencounters) {
+      const controller = controllers.get(reencounter.missedPath.id);
+      if (controller === undefined) {
+        continue;
+      }
       let request;
       try {
         request = createReencounterShownMessage(
@@ -565,14 +789,21 @@ export function createSidePanelApp({
             runtimeError ||
             !isReencounterShownResponse(response) ||
             response.requestId !== request.requestId ||
-            response.ok === false
+            response.ok === false ||
+            response.data.reencounterId !== request.payload.id ||
+            response.data.missedPathId !== reencounter.missedPath.id ||
+            response.data.shownAt !== request.payload.shownAt
           ) {
+            controller.markShownFailed();
             console.error(
               "[The Unclicked] RE_ENCOUNTER_SHOWN was not acknowledged."
             );
+            return;
           }
+          controller.markShown(response.data.reencounterId);
         });
       } catch {
+        controller.markShownFailed();
         console.error("[The Unclicked] Failed to send RE_ENCOUNTER_SHOWN.");
       }
     }
@@ -612,10 +843,16 @@ export function createSidePanelApp({
 
         try {
           const reencounters = response.data.reencounters;
-          renderReencounterSuccess(
-            reencounters.map(toReencounterViewModel)
+          const controllers = renderReencounterSuccess(
+            reencounters.map(toReencounterViewModel),
+            generation
           );
-          reportReencountersShown(reencounters, context, generation);
+          reportReencountersShown(
+            reencounters,
+            context,
+            generation,
+            controllers
+          );
         } catch {
           renderReencounterError("protocol-error", false);
         }
@@ -726,6 +963,12 @@ export function createSidePanelApp({
     "click",
     loadContextualReencounters
   );
+  pauseCollectionButton.addEventListener("click", () => {
+    submitSettingsUpdate(false);
+  });
+  resumeCollectionButton.addEventListener("click", () => {
+    submitSettingsUpdate(true);
+  });
 
   return Object.freeze({
     load() {

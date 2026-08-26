@@ -1,13 +1,15 @@
 // @ts-check
 
 import {
+  DEFAULT_SETTINGS_V1,
   SCHEMA_VERSION,
   isCandidateSignalsV1,
   isCandidateV1,
   isMissedPathV1,
   isReencounterFeedbackV1,
   isReencounterRecordV1,
-  isSearchContextV1
+  isSearchContextV1,
+  isSettingsV1
 } from "../shared/types.js";
 import { normalizeCandidateUrl } from "../shared/url.js";
 
@@ -70,10 +72,6 @@ function isFiniteNonNegativeNumber(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function isUnitNumber(value) {
-  return isFiniteNonNegativeNumber(value) && value <= 1;
-}
-
 function isStringList(value) {
   return Array.isArray(value) && value.every(isNonEmptyString);
 }
@@ -134,25 +132,6 @@ function isChosen(value) {
       isCandidateV1(value.candidate) &&
       isSearchContextV1(value.context) &&
       isFiniteNonNegativeNumber(value.chosenAt)
-  );
-}
-
-function isSettings(value) {
-  return Boolean(
-    hasExactKeys(value, [
-      "enabled",
-      "allowlist",
-      "blocklist",
-      "thresholds",
-      "demoMode"
-    ]) &&
-      typeof value.enabled === "boolean" &&
-      isStringList(value.allowlist) &&
-      isStringList(value.blocklist) &&
-      hasExactKeys(value.thresholds, ["consideration", "reencounter"]) &&
-      isUnitNumber(value.thresholds.consideration) &&
-      isUnitNumber(value.thresholds.reencounter) &&
-      typeof value.demoMode === "boolean"
   );
 }
 
@@ -1217,17 +1196,23 @@ export function createRepository(adapter) {
         REPOSITORY_KINDS.SETTINGS,
         SETTINGS_ID,
         settings,
-        isSettings
+        isSettingsV1
       );
     },
-    getSettings() {
-      return getRecord(REPOSITORY_KINDS.SETTINGS, SETTINGS_ID, isSettings);
+    async getSettings() {
+      return (
+        (await getRecord(
+          REPOSITORY_KINDS.SETTINGS,
+          SETTINGS_ID,
+          isSettingsV1
+        )) ?? DEFAULT_SETTINGS_V1
+      );
     },
     deleteSettings() {
       return deleteRecord(
         REPOSITORY_KINDS.SETTINGS,
         SETTINGS_ID,
-        isSettings
+        isSettingsV1
       );
     },
 

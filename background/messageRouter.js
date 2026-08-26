@@ -10,6 +10,8 @@ import {
   isActiveContextQueryResponse,
   isCandidatesDiscoveredMessage,
   isCandidatesDiscoveredResponse,
+  isMissedPathDeleteMessage,
+  isMissedPathDeleteResponse,
   isMissedPathsQueryMessage,
   isReencounterFeedbackMessage,
   isReencounterFeedbackResponse,
@@ -18,9 +20,12 @@ import {
   isReencounterShownResponse,
   isSessionFinalizeMessage,
   isSessionFinalizeResponse,
+  isSettingsUpdateMessage,
+  isSettingsUpdateResponse,
   isSignalsUpdatedMessage,
   isSignalsUpdatedResponse
 } from "../shared/messages.js";
+import { isSettingsV1 } from "../shared/types.js";
 import {
   ActiveContextQueryError,
   createActiveContextQueryUseCase
@@ -29,6 +34,10 @@ import {
   CandidateDiscoveryError,
   createCandidateDiscoveryUseCase
 } from "./candidateDiscovery.js";
+import {
+  MissedPathDeleteError,
+  createMissedPathDeleteUseCase
+} from "./missedPathDelete.js";
 import {
   ReencounterFeedbackError,
   createReencounterFeedbackUseCase
@@ -46,6 +55,10 @@ import {
   createSignalsUpdateUseCase
 } from "./signalsUpdate.js";
 import { SessionFinalizeError } from "./sessionFinalize.js";
+import {
+  SettingsUpdateError,
+  createSettingsUpdateUseCase
+} from "./settingsUpdate.js";
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -78,21 +91,26 @@ function createRequestError(requestId, code, message, retryable) {
  *
  * @param {{
  *   listMissedPaths: () => Promise<unknown[]>,
+ *   deleteMissedPath?: (id: string) => Promise<boolean>,
  *   getActiveContext?: () => Promise<unknown>,
+ *   getSettings?: () => Promise<unknown>,
  *   listReencounters?: () => Promise<unknown[]>,
  *   recordReencounterFeedback?: (payload: object) => Promise<unknown>,
  *   recordReencounterShown?: (payload: object) => Promise<unknown>,
  *   mergeDiscoveredCandidates?: (payload: object) => Promise<unknown>,
  *   mergeCandidateSignalsSnapshot?: (payload: object) => Promise<unknown>
+ *   saveSettings?: (settings: object) => Promise<boolean>
  * }} repository
  * @param {{
  *   activeContextQueryUseCase?: {execute: () => Promise<unknown>},
  *   candidateDiscoveryUseCase?: {execute: (payload: object) => Promise<unknown>},
+ *   missedPathDeleteUseCase?: {execute: (payload: object) => Promise<unknown>},
  *   reencounterQueryUseCase?: {execute: (payload: object) => Promise<unknown[]>},
  *   reencounterFeedbackUseCase?: {execute: (payload: object) => Promise<unknown>},
  *   reencounterShownUseCase?: {execute: (payload: object) => Promise<unknown>},
  *   sessionFinalizeUseCase?: {execute: (payload: object) => Promise<unknown>},
  *   signalsUpdateUseCase?: {execute: (payload: object) => Promise<unknown>}
+ *   settingsUpdateUseCase?: {execute: (payload: object) => Promise<unknown>}
  * }} [options]
  */
 export function createMessageRouter(repository, options = {}) {
@@ -103,6 +121,10 @@ export function createMessageRouter(repository, options = {}) {
   const activeContextQueryUseCase = options.activeContextQueryUseCase ??
     (typeof repository.getActiveContext === "function"
       ? createActiveContextQueryUseCase(repository)
+      : null);
+  const missedPathDeleteUseCase = options.missedPathDeleteUseCase ??
+    (typeof repository.deleteMissedPath === "function"
+      ? createMissedPathDeleteUseCase(repository)
       : null);
   const reencounterQueryUseCase = options.reencounterQueryUseCase ??
     (typeof repository.listReencounters === "function"
@@ -125,6 +147,11 @@ export function createMessageRouter(repository, options = {}) {
       ? createSignalsUpdateUseCase(repository)
       : null);
   const sessionFinalizeUseCase = options.sessionFinalizeUseCase ?? null;
+  const settingsUpdateUseCase = options.settingsUpdateUseCase ??
+    (typeof repository.getSettings === "function" &&
+    typeof repository.saveSettings === "function"
+      ? createSettingsUpdateUseCase(repository)
+      : null);
   if (
     activeContextQueryUseCase !== null &&
     (!isRecord(activeContextQueryUseCase) ||
@@ -132,6 +159,15 @@ export function createMessageRouter(repository, options = {}) {
   ) {
     throw new TypeError(
       "Message Router Active Context query use case must implement execute()."
+    );
+  }
+  if (
+    missedPathDeleteUseCase !== null &&
+    (!isRecord(missedPathDeleteUseCase) ||
+      typeof missedPathDeleteUseCase.execute !== "function")
+  ) {
+    throw new TypeError(
+      "Message Router Missed Path delete use case must implement execute()."
     );
   }
   if (
@@ -150,6 +186,15 @@ export function createMessageRouter(repository, options = {}) {
   ) {
     throw new TypeError(
       "Message Router signals update use case must implement execute()."
+    );
+  }
+  if (
+    settingsUpdateUseCase !== null &&
+    (!isRecord(settingsUpdateUseCase) ||
+      typeof settingsUpdateUseCase.execute !== "function")
+  ) {
+    throw new TypeError(
+      "Message Router Settings update use case must implement execute()."
     );
   }
   if (
@@ -202,6 +247,8 @@ export function createMessageRouter(repository, options = {}) {
         message.type === MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY;
       const isMissedPathsQuery =
         message.type === MESSAGE_TYPES.MISSED_PATHS_QUERY;
+      const isMissedPathDelete =
+        message.type === MESSAGE_TYPES.MISSED_PATH_DELETE;
       const isReencounterQuery =
         message.type === MESSAGE_TYPES.RE_ENCOUNTER_QUERY;
       const isReencounterFeedback =
@@ -214,15 +261,19 @@ export function createMessageRouter(repository, options = {}) {
         message.type === MESSAGE_TYPES.SIGNALS_UPDATED;
       const isSessionFinalize =
         message.type === MESSAGE_TYPES.SESSION_FINALIZE;
+      const isSettingsUpdate =
+        message.type === MESSAGE_TYPES.SETTINGS_UPDATE;
       if (
         !isActiveContextQuery &&
+        !isMissedPathDelete &&
         !isMissedPathsQuery &&
         !isReencounterQuery &&
         !isReencounterFeedback &&
         !isReencounterShown &&
         !isCandidatesDiscovered &&
         !isSignalsUpdated &&
-        !isSessionFinalize
+        !isSessionFinalize &&
+        !isSettingsUpdate
       ) {
         return null;
       }
@@ -239,6 +290,8 @@ export function createMessageRouter(repository, options = {}) {
       }
       const isValidRequest = isActiveContextQuery
         ? isActiveContextQueryMessage(message)
+        : isMissedPathDelete
+          ? isMissedPathDeleteMessage(message)
         : isMissedPathsQuery
           ? isMissedPathsQueryMessage(message)
           : isReencounterQuery
@@ -251,7 +304,9 @@ export function createMessageRouter(repository, options = {}) {
             ? isCandidatesDiscoveredMessage(message)
             : isSignalsUpdated
               ? isSignalsUpdatedMessage(message)
-              : isSessionFinalizeMessage(message);
+              : isSessionFinalize
+                ? isSessionFinalizeMessage(message)
+                : isSettingsUpdateMessage(message);
       if (!isValidRequest) {
         return createRequestError(
           message.requestId,
@@ -295,6 +350,115 @@ export function createMessageRouter(repository, options = {}) {
             message.requestId,
             RESPONSE_ERROR_CODES.STORAGE_ERROR,
             "Unable to query the current SearchContext.",
+            true
+          );
+        }
+      }
+
+      if (isMissedPathDelete) {
+        if (missedPathDeleteUseCase === null) {
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.MISSED_PATH_DELETE_FAILED,
+            "Missed Path delete use case is unavailable.",
+            false
+          );
+        }
+        try {
+          const result = await missedPathDeleteUseCase.execute(message.payload);
+          const response = createSuccessResponseMessage(
+            message.requestId,
+            result
+          );
+          if (!isMissedPathDeleteResponse(response)) {
+            throw new MissedPathDeleteError(
+              RESPONSE_ERROR_CODES.MISSED_PATH_DELETE_FAILED,
+              "Missed Path delete returned invalid data.",
+              false
+            );
+          }
+          return response;
+        } catch (error) {
+          if (error instanceof MissedPathDeleteError) {
+            return createRequestError(
+              message.requestId,
+              error.code,
+              error.message,
+              error.retryable
+            );
+          }
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.MISSED_PATH_DELETE_FAILED,
+            "Unable to execute Missed Path delete.",
+            false
+          );
+        }
+      }
+
+      if (isSettingsUpdate) {
+        if (settingsUpdateUseCase === null) {
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.SETTINGS_UPDATE_FAILED,
+            "Settings update use case is unavailable.",
+            false
+          );
+        }
+        try {
+          const result = await settingsUpdateUseCase.execute(message.payload);
+          const response = createSuccessResponseMessage(
+            message.requestId,
+            result
+          );
+          if (!isSettingsUpdateResponse(response)) {
+            throw new SettingsUpdateError(
+              RESPONSE_ERROR_CODES.SETTINGS_UPDATE_FAILED,
+              "Settings update returned invalid data.",
+              false
+            );
+          }
+          return response;
+        } catch (error) {
+          if (error instanceof SettingsUpdateError) {
+            return createRequestError(
+              message.requestId,
+              error.code,
+              error.message,
+              error.retryable
+            );
+          }
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.SETTINGS_UPDATE_FAILED,
+            "Unable to execute Settings update.",
+            false
+          );
+        }
+      }
+
+      if (
+        (isCandidatesDiscovered || isSignalsUpdated || isSessionFinalize) &&
+        typeof repository.getSettings === "function"
+      ) {
+        try {
+          const settings = await repository.getSettings();
+          if (!isSettingsV1(settings)) {
+            throw new TypeError("Repository returned invalid Settings data.");
+          }
+          if (!settings.enabled) {
+            return createRequestError(
+              message.requestId,
+              RESPONSE_ERROR_CODES.COLLECTION_PAUSED,
+              "Collection is paused in Settings.",
+              false
+            );
+          }
+        } catch {
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.STORAGE_ERROR,
+            "Unable to read collection Settings.",
             true
           );
         }

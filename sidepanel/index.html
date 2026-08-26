@@ -96,9 +96,30 @@
         目前没有考虑过但未选择的候选。
       </p>
 
+      <section class="session settings-control" aria-labelledby="settings-title">
+        <h2 class="section-title" id="settings-title">采集控制</h2>
+        <p
+          class="status"
+          id="settings-status"
+          data-state="idle"
+          role="status"
+          aria-live="polite"
+        >
+          默认启用；暂停不会影响查看或删除已有记录。
+        </p>
+        <div class="settings-actions">
+          <button type="button" class="btn btn-quiet" id="pause-collection-button">
+            暂停采集
+          </button>
+          <button type="button" class="btn btn-quiet" id="resume-collection-button">
+            恢复采集
+          </button>
+        </div>
+      </section>
+
       <footer class="panel-footer">
         <p class="footer-note">
-          重逢反馈、打开、稍后、不相关和删除操作尚未启用。
+          所有记录仅保存在本地；删除会同时清理关联的重逢记录。
         </p>
         <button type="button" class="btn btn-quiet" id="retry-button" hidden>
           重新加载

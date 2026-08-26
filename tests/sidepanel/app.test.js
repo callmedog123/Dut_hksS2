@@ -13,12 +13,15 @@ import {
 } from "../../sidepanel/app.js";
 import {
   ACTIVE_CONTEXT_STATUSES,
+  REENCOUNTER_FEEDBACK_OUTCOMES,
   RESPONSE_ERROR_CODES,
   createErrorResponseMessage,
   createSuccessResponseMessage,
   isActiveContextQueryMessage,
+  isMissedPathDeleteMessage,
   isMissedPathsQueryMessage,
   isReencounterQueryMessage,
+  isReencounterFeedbackMessage,
   isReencounterShownMessage
 } from "../../shared/messages.js";
 
@@ -120,6 +123,19 @@ function findByClass(root, className) {
   return null;
 }
 
+function findByAttribute(root, name, value) {
+  if (root.getAttribute(name) === value) {
+    return root;
+  }
+  for (const child of root.children) {
+    const match = findByAttribute(child, name, value);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
 function createMissedPath(overrides = {}) {
   const candidateOverrides = overrides.candidate ?? {};
   return {
@@ -200,7 +216,14 @@ function createRankedReencounter(index = 1, overrides = {}) {
   };
 }
 
-function createHarness(respond, { now = () => 1_000 } = {}) {
+function createHarness(
+  respond,
+  {
+    now = () => 1_000,
+    openUrl = () => true,
+    respondToShown = null
+  } = {}
+) {
   const document = new FixtureDocument();
   const sentMessages = [];
   const shownUiStates = [];
@@ -214,20 +237,24 @@ function createHarness(respond, { now = () => 1_000 } = {}) {
             .getElementById("reencounter-status")
             .getAttribute("data-state")
         );
-        callback(
-          createSuccessResponseMessage(message.requestId, {
-            reencounterId: message.payload.id,
-            missedPathId: message.payload.missedPathId,
-            shownAt: message.payload.shownAt,
-            created: true
-          })
-        );
+        if (respondToShown !== null) {
+          respondToShown({ message, callback, runtime, document });
+        } else {
+          callback(
+            createSuccessResponseMessage(message.requestId, {
+              reencounterId: message.payload.id,
+              missedPathId: message.payload.missedPathId,
+              shownAt: message.payload.shownAt,
+              created: true
+            })
+          );
+        }
         return;
       }
       respond({ message, callback, runtime, sentMessages, document });
     }
   };
-  const app = createSidePanelApp({ document, runtime, now });
+  const app = createSidePanelApp({ document, runtime, now, openUrl });
   return { app, document, runtime, sentMessages, shownUiStates };
 }
 
@@ -282,6 +309,93 @@ test("queries and renders a successful Missed Path list", () => {
   assert.equal(findByClass(card, "card-url").textContent, dangerousUrl);
   assert.equal(findByClass(card, "card-url").getAttribute("href"), null);
   assert.equal(findByClass(card, "card-source").textContent, dangerousSource);
+});
+
+test("waits for MISSED_PATH_DELETE acknowledgement before removing a card", () => {
+  let pendingDelete = null;
+  const harness = createHarness(({ message, callback }) => {
+    if (isMissedPathsQueryMessage(message)) {
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          missedPaths: [createMissedPath()]
+        })
+      );
+    } else if (isMissedPathDeleteMessage(message)) {
+      pendingDelete = { message, callback };
+    } else if (isActiveContextQueryMessage(message)) {
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          status: ACTIVE_CONTEXT_STATUSES.UNAVAILABLE,
+          context: null
+        })
+      );
+    }
+  });
+  harness.app.loadMissedPaths();
+  const list = harness.document.getElementById("card-list");
+  const card = list.children[0];
+  const deleteButton = findByAttribute(
+    card,
+    "data-action",
+    "delete-missed-path"
+  );
+
+  deleteButton.click();
+  assert.equal(isMissedPathDeleteMessage(pendingDelete.message), true);
+  assert.equal(list.children.length, 1);
+  assert.equal(deleteButton.disabled, true);
+  assert.equal(findByClass(card, "delete-status").textContent, "正在删除…");
+
+  pendingDelete.callback(
+    createSuccessResponseMessage(pendingDelete.message.requestId, {
+      missedPathId: "missed-1",
+      deleted: true
+    })
+  );
+  assert.equal(list.children.length, 0);
+  assert.equal(harness.document.getElementById("missed-count").textContent, "0");
+  assert.equal(harness.document.getElementById("empty-state").hidden, false);
+});
+
+test("keeps a Missed Path card when deletion fails and permits retry", () => {
+  let attempt = 0;
+  const harness = createHarness(({ message, callback }) => {
+    if (isMissedPathsQueryMessage(message)) {
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          missedPaths: [createMissedPath()]
+        })
+      );
+    } else if (isMissedPathDeleteMessage(message)) {
+      attempt += 1;
+      callback(
+        createErrorResponseMessage(message.requestId, {
+          code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+          message: "Delete failed.",
+          retryable: true
+        })
+      );
+    }
+  });
+  harness.app.loadMissedPaths();
+  const list = harness.document.getElementById("card-list");
+  const card = list.children[0];
+  const deleteButton = findByAttribute(
+    card,
+    "data-action",
+    "delete-missed-path"
+  );
+
+  deleteButton.click();
+  assert.equal(attempt, 1);
+  assert.equal(list.children.length, 1);
+  assert.equal(deleteButton.disabled, false);
+  assert.equal(
+    findByClass(card, "delete-status").textContent,
+    "删除失败，请重试。"
+  );
+  deleteButton.click();
+  assert.equal(attempt, 2);
 });
 
 test("renders an empty state for an empty Repository", () => {
@@ -568,12 +682,278 @@ test("renders one to three ranked Re-encounters as safe display-only cards", () 
   assert.deepEqual(shownMessages[0].payload.triggerContext, createContext());
   assert.equal(shownMessages[0].payload.shownAt, 1_000);
   assert.deepEqual(harness.shownUiStates, ["ready"]);
+  assert.equal(
+    findByAttribute(
+      firstCard,
+      "data-outcome",
+      REENCOUNTER_FEEDBACK_OUTCOMES.OPENED
+    ).disabled,
+    false
+  );
+  assert.equal(
+    findByClass(firstCard, "feedback-status").getAttribute("data-state"),
+    "ready"
+  );
 
   harness.app.loadContextualReencounters();
   assert.equal(list.children.length, 3);
   shownMessages = harness.sentMessages.filter(isReencounterShownMessage);
   assert.equal(shownMessages.length, 4);
   assert.deepEqual(harness.shownUiStates, ["ready", "ready", "ready", "ready"]);
+});
+
+test("waits for feedback acknowledgement before safely opening a normalized URL", () => {
+  const ranked = createRankedReencounter(1, {
+    missedPath: createMissedPath({
+      candidate: {
+        url: "https://example.com/item?utm_source=mail&z=2&a=1#details"
+      }
+    })
+  });
+  let pendingFeedback = null;
+  const opened = [];
+  const harness = createHarness(
+    ({ message, callback }) => {
+      if (isActiveContextQueryMessage(message)) {
+        callback(
+          createSuccessResponseMessage(message.requestId, {
+            status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+            context: createContext()
+          })
+        );
+      } else if (isReencounterQueryMessage(message)) {
+        callback(
+          createSuccessResponseMessage(message.requestId, {
+            reencounters: [ranked]
+          })
+        );
+      } else if (isReencounterFeedbackMessage(message)) {
+        pendingFeedback = { message, callback };
+      }
+    },
+    { openUrl: (url) => opened.push(url) }
+  );
+
+  harness.app.loadContextualReencounters();
+  const card = harness.document.getElementById("reencounter-list").children[0];
+  const openButton = findByAttribute(
+    card,
+    "data-outcome",
+    REENCOUNTER_FEEDBACK_OUTCOMES.OPENED
+  );
+  openButton.click();
+
+  assert.equal(isReencounterFeedbackMessage(pendingFeedback.message), true);
+  assert.equal(pendingFeedback.message.payload.outcome, "OPENED");
+  assert.deepEqual(opened, []);
+  assert.equal(findByClass(card, "feedback-status").textContent, "正在记录反馈…");
+
+  pendingFeedback.callback(
+    createSuccessResponseMessage(pendingFeedback.message.requestId, {
+      reencounterId: pendingFeedback.message.payload.reencounterId,
+      outcome: pendingFeedback.message.payload.outcome,
+      feedbackAt: pendingFeedback.message.payload.feedbackAt,
+      updated: true
+    })
+  );
+
+  assert.deepEqual(opened, ["https://example.com/item?a=1&z=2"]);
+  assert.equal(findByClass(card, "feedback-status").textContent, "已记录为打开。");
+  assert.equal(openButton.disabled, true);
+});
+
+test("records LATER and NOT_RELEVANT without opening a URL", () => {
+  for (const outcome of [
+    REENCOUNTER_FEEDBACK_OUTCOMES.LATER,
+    REENCOUNTER_FEEDBACK_OUTCOMES.NOT_RELEVANT
+  ]) {
+    const opened = [];
+    const harness = createHarness(
+      ({ message, callback }) => {
+        if (isActiveContextQueryMessage(message)) {
+          callback(
+            createSuccessResponseMessage(message.requestId, {
+              status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+              context: createContext()
+            })
+          );
+        } else if (isReencounterQueryMessage(message)) {
+          callback(
+            createSuccessResponseMessage(message.requestId, {
+              reencounters: [createRankedReencounter()]
+            })
+          );
+        } else if (isReencounterFeedbackMessage(message)) {
+          callback(
+            createSuccessResponseMessage(message.requestId, {
+              ...message.payload,
+              updated: true
+            })
+          );
+        }
+      },
+      { openUrl: (url) => opened.push(url) }
+    );
+    harness.app.loadContextualReencounters();
+    const card = harness.document.getElementById("reencounter-list").children[0];
+    findByAttribute(card, "data-outcome", outcome).click();
+
+    assert.deepEqual(opened, []);
+    assert.equal(
+      findByClass(card, "feedback-status").getAttribute("data-state"),
+      "success"
+    );
+    const feedbackMessages = harness.sentMessages.filter(
+      isReencounterFeedbackMessage
+    );
+    assert.equal(feedbackMessages.length, 1);
+    assert.equal(feedbackMessages[0].payload.outcome, outcome);
+  }
+});
+
+test("keeps failed feedback retryable without pretending completion", () => {
+  let feedbackAttempt = 0;
+  const harness = createHarness(({ message, callback }) => {
+    if (isActiveContextQueryMessage(message)) {
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+          context: createContext()
+        })
+      );
+    } else if (isReencounterQueryMessage(message)) {
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          reencounters: [createRankedReencounter()]
+        })
+      );
+    } else if (isReencounterFeedbackMessage(message)) {
+      feedbackAttempt += 1;
+      callback(
+        feedbackAttempt === 1
+          ? createErrorResponseMessage(message.requestId, {
+              code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+              message: "Storage unavailable.",
+              retryable: true
+            })
+          : createSuccessResponseMessage(message.requestId, {
+              ...message.payload,
+              updated: true
+            })
+      );
+    }
+  });
+  harness.app.loadContextualReencounters();
+  const card = harness.document.getElementById("reencounter-list").children[0];
+  const laterButton = findByAttribute(
+    card,
+    "data-outcome",
+    REENCOUNTER_FEEDBACK_OUTCOMES.LATER
+  );
+  const openedButton = findByAttribute(
+    card,
+    "data-outcome",
+    REENCOUNTER_FEEDBACK_OUTCOMES.OPENED
+  );
+
+  laterButton.click();
+  assert.equal(findByClass(card, "feedback-status").textContent, "记录失败，请重试。");
+  assert.equal(laterButton.disabled, false);
+  assert.equal(openedButton.disabled, true);
+  laterButton.click();
+  assert.equal(feedbackAttempt, 2);
+  assert.equal(
+    findByClass(card, "feedback-status").getAttribute("data-state"),
+    "success"
+  );
+});
+
+test("never reports OPENED or opens a disallowed URL", () => {
+  const opened = [];
+  const harness = createHarness(
+    ({ message, callback }) => {
+      callback(
+        isActiveContextQueryMessage(message)
+          ? createSuccessResponseMessage(message.requestId, {
+              status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+              context: createContext()
+            })
+          : createSuccessResponseMessage(message.requestId, {
+              reencounters: [
+                createRankedReencounter(1, {
+                  missedPath: createMissedPath({
+                    candidate: { url: "javascript:alert(1)" }
+                  })
+                })
+              ]
+            })
+      );
+    },
+    { openUrl: (url) => opened.push(url) }
+  );
+  harness.app.loadContextualReencounters();
+  const card = harness.document.getElementById("reencounter-list").children[0];
+  findByAttribute(
+    card,
+    "data-outcome",
+    REENCOUNTER_FEEDBACK_OUTCOMES.OPENED
+  ).click();
+
+  assert.equal(
+    harness.sentMessages.filter(isReencounterFeedbackMessage).length,
+    0
+  );
+  assert.deepEqual(opened, []);
+  assert.equal(
+    findByClass(card, "feedback-status").textContent,
+    "链接不安全或无效，未记录为打开。"
+  );
+});
+
+test("keeps feedback disabled when RE_ENCOUNTER_SHOWN is rejected", () => {
+  const harness = createHarness(
+    ({ message, callback }) => {
+      callback(
+        isActiveContextQueryMessage(message)
+          ? createSuccessResponseMessage(message.requestId, {
+              status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+              context: createContext()
+            })
+          : createSuccessResponseMessage(message.requestId, {
+              reencounters: [createRankedReencounter()]
+            })
+      );
+    },
+    {
+      respondToShown({ message, callback }) {
+        callback(
+          createErrorResponseMessage(message.requestId, {
+            code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+            message: "Unable to persist shown.",
+            retryable: true
+          })
+        );
+      }
+    }
+  );
+  harness.app.loadContextualReencounters();
+  const card = harness.document.getElementById("reencounter-list").children[0];
+  const openButton = findByAttribute(
+    card,
+    "data-outcome",
+    REENCOUNTER_FEEDBACK_OUTCOMES.OPENED
+  );
+
+  assert.equal(openButton.disabled, true);
+  assert.equal(
+    findByClass(card, "feedback-status").textContent,
+    "展示记录失败，请重新加载后再试。"
+  );
+  openButton.click();
+  assert.equal(
+    harness.sentMessages.filter(isReencounterFeedbackMessage).length,
+    0
+  );
 });
 
 test("does not report shown when a query result cannot enter ready UI", () => {

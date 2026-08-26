@@ -1,6 +1,7 @@
 // @ts-check
 
 import {
+  DEFAULT_SETTINGS_V1,
   REENCOUNTER_FEEDBACK_OUTCOMES,
   SCHEMA_VERSION,
   isCandidateSignalsV1,
@@ -9,11 +10,13 @@ import {
   isReencounterFeedbackV1,
   isReencounterRecordV1,
   isRankedReencounterV1,
-  isSearchContextV1
+  isSearchContextV1,
+  isSettingsV1
 } from "./types.js";
 import { normalizeCandidateUrl } from "./url.js";
 
 export {
+  DEFAULT_SETTINGS_V1,
   REENCOUNTER_FEEDBACK_OUTCOMES,
   SCHEMA_VERSION,
   SCHEMA_VERSION as MESSAGE_SCHEMA_VERSION
@@ -23,12 +26,14 @@ export const MESSAGE_TYPES = Object.freeze({
   ACTIVE_CONTEXT_QUERY: "ACTIVE_CONTEXT_QUERY",
   CANDIDATE_CHOSEN: "CANDIDATE_CHOSEN",
   CANDIDATES_DISCOVERED: "CANDIDATES_DISCOVERED",
+  MISSED_PATH_DELETE: "MISSED_PATH_DELETE",
   MISSED_PATHS_QUERY: "MISSED_PATHS_QUERY",
   PING: "PING",
   PONG: "PONG",
   RE_ENCOUNTER_QUERY: "RE_ENCOUNTER_QUERY",
   RE_ENCOUNTER_FEEDBACK: "RE_ENCOUNTER_FEEDBACK",
   RE_ENCOUNTER_SHOWN: "RE_ENCOUNTER_SHOWN",
+  SETTINGS_UPDATE: "SETTINGS_UPDATE",
   SESSION_FINALIZE: "SESSION_FINALIZE",
   SIGNALS_UPDATED: "SIGNALS_UPDATED"
 });
@@ -41,7 +46,9 @@ export const ACTIVE_CONTEXT_STATUSES = Object.freeze({
 export const RESPONSE_ERROR_CODES = Object.freeze({
   CANDIDATE_DISCOVERY_CONFLICT: "CANDIDATE_DISCOVERY_CONFLICT",
   CANDIDATE_DISCOVERY_FAILED: "CANDIDATE_DISCOVERY_FAILED",
+  COLLECTION_PAUSED: "COLLECTION_PAUSED",
   INVALID_REQUEST: "INVALID_REQUEST",
+  MISSED_PATH_DELETE_FAILED: "MISSED_PATH_DELETE_FAILED",
   REENCOUNTER_QUERY_FAILED: "REENCOUNTER_QUERY_FAILED",
   REENCOUNTER_FEEDBACK_CONFLICT: "REENCOUNTER_FEEDBACK_CONFLICT",
   REENCOUNTER_FEEDBACK_FAILED: "REENCOUNTER_FEEDBACK_FAILED",
@@ -56,6 +63,7 @@ export const RESPONSE_ERROR_CODES = Object.freeze({
   SESSION_NOT_FOUND: "SESSION_NOT_FOUND",
   SIGNALS_UPDATE_CONFLICT: "SIGNALS_UPDATE_CONFLICT",
   SIGNALS_UPDATE_FAILED: "SIGNALS_UPDATE_FAILED",
+  SETTINGS_UPDATE_FAILED: "SETTINGS_UPDATE_FAILED",
   STORAGE_ERROR: "STORAGE_ERROR"
 });
 
@@ -148,6 +156,22 @@ export const RESPONSE_ERROR_CODES = Object.freeze({
  */
 
 /**
+ * @typedef {object} SettingsUpdateMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.SETTINGS_UPDATE} type
+ * @property {string} requestId
+ * @property {{enabled: boolean, requestedAt: number}} payload
+ */
+
+/**
+ * @typedef {object} MissedPathDeleteMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.MISSED_PATH_DELETE} type
+ * @property {string} requestId
+ * @property {{missedPathId: string, requestedAt: number}} payload
+ */
+
+/**
  * @typedef {object} ReencounterQueryMessageV1
  * @property {typeof SCHEMA_VERSION} schemaVersion
  * @property {typeof MESSAGE_TYPES.RE_ENCOUNTER_QUERY} type
@@ -218,6 +242,22 @@ const SIGNALS_UPDATED_PAYLOAD_KEYS = Object.freeze([
 const SESSION_FINALIZE_PAYLOAD_KEYS = Object.freeze([
   "sessionId",
   "finalizedAt"
+]);
+const SETTINGS_UPDATE_PAYLOAD_KEYS = Object.freeze([
+  "enabled",
+  "requestedAt"
+]);
+const SETTINGS_UPDATE_RESPONSE_KEYS = Object.freeze([
+  "settings",
+  "updated"
+]);
+const MISSED_PATH_DELETE_PAYLOAD_KEYS = Object.freeze([
+  "missedPathId",
+  "requestedAt"
+]);
+const MISSED_PATH_DELETE_RESPONSE_KEYS = Object.freeze([
+  "missedPathId",
+  "deleted"
 ]);
 const REENCOUNTER_QUERY_PAYLOAD_KEYS = Object.freeze([
   "context",
@@ -690,6 +730,82 @@ export function isMissedPathsQueryMessage(message) {
 }
 
 /**
+ * @param {boolean} enabled
+ * @param {number} [requestedAt]
+ * @param {string} [requestId]
+ * @returns {SettingsUpdateMessageV1}
+ */
+export function createSettingsUpdateMessage(
+  enabled,
+  requestedAt = Date.now(),
+  requestId = createRequestId()
+) {
+  requireRequestId(requestId, "SETTINGS_UPDATE");
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.SETTINGS_UPDATE,
+    requestId,
+    payload: { enabled, requestedAt }
+  };
+  if (!isSettingsUpdateMessage(message)) {
+    throw new TypeError("Failed to create a valid SETTINGS_UPDATE message.");
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is SettingsUpdateMessageV1}
+ */
+export function isSettingsUpdateMessage(message) {
+  return Boolean(
+    hasValidEnvelope(message, MESSAGE_TYPES.SETTINGS_UPDATE) &&
+      hasExactKeys(message.payload, SETTINGS_UPDATE_PAYLOAD_KEYS) &&
+      typeof message.payload.enabled === "boolean" &&
+      isFiniteNumber(message.payload.requestedAt) &&
+      message.payload.requestedAt >= 0
+  );
+}
+
+/**
+ * @param {string} missedPathId
+ * @param {number} [requestedAt]
+ * @param {string} [requestId]
+ * @returns {MissedPathDeleteMessageV1}
+ */
+export function createMissedPathDeleteMessage(
+  missedPathId,
+  requestedAt = Date.now(),
+  requestId = createRequestId()
+) {
+  requireRequestId(requestId, "MISSED_PATH_DELETE");
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.MISSED_PATH_DELETE,
+    requestId,
+    payload: { missedPathId, requestedAt }
+  };
+  if (!isMissedPathDeleteMessage(message)) {
+    throw new TypeError("Failed to create a valid MISSED_PATH_DELETE message.");
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is MissedPathDeleteMessageV1}
+ */
+export function isMissedPathDeleteMessage(message) {
+  return Boolean(
+    hasValidEnvelope(message, MESSAGE_TYPES.MISSED_PATH_DELETE) &&
+      hasExactKeys(message.payload, MISSED_PATH_DELETE_PAYLOAD_KEYS) &&
+      isNonEmptyString(message.payload.missedPathId) &&
+      isFiniteNumber(message.payload.requestedAt) &&
+      message.payload.requestedAt >= 0
+  );
+}
+
+/**
  * @param {import("./types.js").SearchContextV1} context
  * @param {number} limit
  * @param {string} [requestId]
@@ -1050,6 +1166,24 @@ export function isMissedPathsQueryResponse(message) {
  * @param {unknown} message
  * @returns {boolean}
  */
+export function isMissedPathDeleteResponse(message) {
+  if (!isResponseMessage(message)) {
+    return false;
+  }
+  if (message.ok === false) {
+    return true;
+  }
+  return Boolean(
+    hasExactKeys(message.data, MISSED_PATH_DELETE_RESPONSE_KEYS) &&
+      isNonEmptyString(message.data.missedPathId) &&
+      typeof message.data.deleted === "boolean"
+  );
+}
+
+/**
+ * @param {unknown} message
+ * @returns {boolean}
+ */
 export function isReencounterQueryResponse(message) {
   if (!isResponseMessage(message)) {
     return false;
@@ -1104,6 +1238,24 @@ export function isReencounterFeedbackResponse(message) {
       ) &&
       isFiniteNumber(message.data.feedbackAt) &&
       message.data.feedbackAt >= 0 &&
+      typeof message.data.updated === "boolean"
+  );
+}
+
+/**
+ * @param {unknown} message
+ * @returns {boolean}
+ */
+export function isSettingsUpdateResponse(message) {
+  if (!isResponseMessage(message)) {
+    return false;
+  }
+  if (message.ok === false) {
+    return true;
+  }
+  return Boolean(
+    hasExactKeys(message.data, SETTINGS_UPDATE_RESPONSE_KEYS) &&
+      isSettingsV1(message.data.settings) &&
       typeof message.data.updated === "boolean"
   );
 }

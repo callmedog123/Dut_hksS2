@@ -6,15 +6,18 @@ import {
   MESSAGE_SCHEMA_VERSION,
   MESSAGE_TYPES,
   RESPONSE_ERROR_CODES,
+  REENCOUNTER_FEEDBACK_OUTCOMES,
   SCHEMA_VERSION,
   createActiveContextQueryMessage,
   createCandidateChosenMessage,
   createCandidatesDiscoveredMessage,
   createErrorResponseMessage,
+  createMissedPathDeleteMessage,
   createMissedPathsQueryMessage,
   createPingMessage,
   createPongMessage,
   createReencounterQueryMessage,
+  createReencounterFeedbackMessage,
   createReencounterShownMessage,
   createSessionFinalizeMessage,
   createSignalsUpdatedMessage,
@@ -24,12 +27,16 @@ import {
   isCandidateChosenMessage,
   isCandidatesDiscoveredMessage,
   isCandidatesDiscoveredResponse,
+  isMissedPathDeleteMessage,
+  isMissedPathDeleteResponse,
   isMissedPathsQueryMessage,
   isMissedPathsQueryResponse,
   isPingMessage,
   isPongMessage,
   isReencounterQueryMessage,
   isReencounterQueryResponse,
+  isReencounterFeedbackMessage,
+  isReencounterFeedbackResponse,
   isReencounterShownMessage,
   isReencounterShownResponse,
   isResponseMessage,
@@ -104,6 +111,11 @@ const activeContextQuery = createActiveContextQueryMessage(
   "request-active-context"
 );
 const missedPathsQuery = createMissedPathsQueryMessage("request-missed-paths");
+const missedPathDelete = createMissedPathDeleteMessage(
+  "missed-1",
+  1_300,
+  "request-missed-path-delete"
+);
 const reencounterContext = {
   query: "robot navigation",
   source: "local-demo",
@@ -146,6 +158,12 @@ const reencounterShown = createReencounterShownMessage(
   reencounterContext,
   1_100,
   "request-reencounter-shown"
+);
+const reencounterFeedback = createReencounterFeedbackMessage(
+  reencounterShown.payload.id,
+  REENCOUNTER_FEEDBACK_OUTCOMES.OPENED,
+  1_200,
+  "request-reencounter-feedback"
 );
 
 const messageCases = [
@@ -208,6 +226,18 @@ const messageCases = [
     message: reencounterShown,
     validator: isReencounterShownMessage,
     wrongType: MESSAGE_TYPES.PING
+  },
+  {
+    name: "MISSED_PATH_DELETE",
+    message: missedPathDelete,
+    validator: isMissedPathDeleteMessage,
+    wrongType: MESSAGE_TYPES.PING
+  },
+  {
+    name: "RE_ENCOUNTER_FEEDBACK",
+    message: reencounterFeedback,
+    validator: isReencounterFeedbackMessage,
+    wrongType: MESSAGE_TYPES.PING
   }
 ];
 
@@ -218,8 +248,10 @@ test("keeps MESSAGE_TYPES frozen with the implemented v1 messages", () => {
     "CANDIDATES_DISCOVERED",
     "CANDIDATE_CHOSEN",
     "MISSED_PATHS_QUERY",
+    "MISSED_PATH_DELETE",
     "PING",
     "PONG",
+    "RE_ENCOUNTER_FEEDBACK",
     "RE_ENCOUNTER_QUERY",
     "RE_ENCOUNTER_SHOWN",
     "SESSION_FINALIZE",
@@ -873,6 +905,106 @@ test("RE_ENCOUNTER_SHOWN response strictly validates persisted identity", () => 
       createErrorResponseMessage("shown-response", {
         code: RESPONSE_ERROR_CODES.MISSED_PATH_NOT_FOUND,
         message: "Unknown Missed Path.",
+        retryable: false
+      })
+    ),
+    true
+  );
+});
+
+test("creates and strictly validates MISSED_PATH_DELETE", () => {
+  assert.equal(isMissedPathDeleteMessage(missedPathDelete), true);
+  assert.deepEqual(missedPathDelete, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.MISSED_PATH_DELETE,
+    requestId: "request-missed-path-delete",
+    payload: { missedPathId: "missed-1", requestedAt: 1_300 }
+  });
+  for (const payload of [
+    { ...missedPathDelete.payload, missedPathId: "" },
+    { ...missedPathDelete.payload, requestedAt: -1 },
+    { ...missedPathDelete.payload, extra: true }
+  ]) {
+    assert.equal(
+      isMissedPathDeleteMessage({ ...missedPathDelete, payload }),
+      false
+    );
+  }
+
+  const response = createSuccessResponseMessage("delete-response", {
+    missedPathId: "missed-1",
+    deleted: true
+  });
+  assert.equal(isMissedPathDeleteResponse(response), true);
+  assert.equal(
+    isMissedPathDeleteResponse({
+      ...response,
+      data: { ...response.data, deleted: "yes" }
+    }),
+    false
+  );
+  assert.equal(
+    isMissedPathDeleteResponse({
+      ...response,
+      data: { ...response.data, extra: true }
+    }),
+    false
+  );
+});
+
+test("creates and strictly validates RE_ENCOUNTER_FEEDBACK", () => {
+  assert.equal(isReencounterFeedbackMessage(reencounterFeedback), true);
+  assert.deepEqual(reencounterFeedback, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.RE_ENCOUNTER_FEEDBACK,
+    requestId: "request-reencounter-feedback",
+    payload: {
+      reencounterId: reencounterShown.payload.id,
+      outcome: REENCOUNTER_FEEDBACK_OUTCOMES.OPENED,
+      feedbackAt: 1_200
+    }
+  });
+
+  for (const payload of [
+    { ...reencounterFeedback.payload, reencounterId: "" },
+    { ...reencounterFeedback.payload, outcome: "DISMISSED" },
+    { ...reencounterFeedback.payload, feedbackAt: -1 },
+    { ...reencounterFeedback.payload, extra: true }
+  ]) {
+    assert.equal(
+      isReencounterFeedbackMessage({ ...reencounterFeedback, payload }),
+      false
+    );
+  }
+});
+
+test("RE_ENCOUNTER_FEEDBACK response strictly validates persisted feedback", () => {
+  const response = createSuccessResponseMessage("feedback-response", {
+    reencounterId: reencounterShown.payload.id,
+    outcome: REENCOUNTER_FEEDBACK_OUTCOMES.LATER,
+    feedbackAt: 1_200,
+    updated: true
+  });
+  assert.equal(isReencounterFeedbackResponse(response), true);
+  assert.equal(
+    isReencounterFeedbackResponse({
+      ...response,
+      data: { ...response.data, outcome: "DISMISSED" }
+    }),
+    false
+  );
+  assert.equal(
+    isReencounterFeedbackResponse({
+      ...response,
+      data: { ...response.data, extra: true }
+    }),
+    false
+  );
+  assert.equal(
+    isReencounterFeedbackResponse(
+      createErrorResponseMessage("feedback-response", {
+        code: RESPONSE_ERROR_CODES.REENCOUNTER_FEEDBACK_CONFLICT,
+        message: "Conflicting feedback.",
         retryable: false
       })
     ),

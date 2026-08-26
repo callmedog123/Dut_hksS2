@@ -6,6 +6,7 @@ import { createHoverTracker } from "./eventCollector/hover.js";
 import { createVisibilityTracker } from "./visibility.js";
 import {
   MESSAGE_TYPES,
+  RESPONSE_ERROR_CODES,
   createCandidatesDiscoveredMessage,
   createSessionFinalizeMessage,
   createSignalsUpdatedMessage,
@@ -127,6 +128,7 @@ export function createDemoRuntime(options = {}) {
   let observerCleanup = () => {};
   let finalizingPromise = null;
   let finalSignalsPersisted = false;
+  let collectionEnabled = true;
   let writeTail = Promise.resolve();
 
   const candidates = new Map();
@@ -208,11 +210,15 @@ export function createDemoRuntime(options = {}) {
       throw new DemoRuntimeError(`${message.type} 返回了无效响应。`);
     }
     if (response.ok !== true) {
+      if (response.error.code === RESPONSE_ERROR_CODES.COLLECTION_PAUSED) {
+        collectionEnabled = false;
+      }
       throw new DemoRuntimeError(
         `${message.type} 失败：${response.error.message}`,
         response.error
       );
     }
+    collectionEnabled = true;
     return response;
   }
 
@@ -249,7 +255,10 @@ export function createDemoRuntime(options = {}) {
         return;
       }
       state.visibleMs = Math.max(state.visibleMs, visibleMs);
-      if (lifecycle === "collecting" || lifecycle === "finalizing") {
+      if (
+        collectionEnabled &&
+        (lifecycle === "collecting" || lifecycle === "finalizing")
+      ) {
         reportBackgroundWrite(enqueueSignals(state), "可见时长");
       }
     },
@@ -259,7 +268,10 @@ export function createDemoRuntime(options = {}) {
         return;
       }
       state.returnCount = Math.max(state.returnCount, returnCount);
-      if (lifecycle === "collecting" || lifecycle === "finalizing") {
+      if (
+        collectionEnabled &&
+        (lifecycle === "collecting" || lifecycle === "finalizing")
+      ) {
         reportBackgroundWrite(enqueueSignals(state), "回访次数");
       }
     }
@@ -274,7 +286,10 @@ export function createDemoRuntime(options = {}) {
       }
       state.hoverMs = Math.max(state.hoverMs, hoverMs);
       state.hoverCount = Math.max(state.hoverCount, hoverCount);
-      if (lifecycle === "collecting" || lifecycle === "finalizing") {
+      if (
+        collectionEnabled &&
+        (lifecycle === "collecting" || lifecycle === "finalizing")
+      ) {
         reportBackgroundWrite(enqueueSignals(state), "悬停信号");
       }
     }
@@ -284,6 +299,9 @@ export function createDemoRuntime(options = {}) {
     root: runtimeDocument,
     now: readWallNow,
     sendMessage(message) {
+      if (!collectionEnabled) {
+        return null;
+      }
       const state = getSignalStateByCandidateId(message.payload.candidateId);
       if (state !== null) {
         state.clicked = true;
@@ -421,7 +439,7 @@ export function createDemoRuntime(options = {}) {
   }
 
   async function start() {
-    if (lifecycle !== "idle") {
+    if (lifecycle !== "idle" && lifecycle !== "paused") {
       throw new DemoRuntimeError("Demo Runtime 已经启动或结束。");
     }
     if (!adapter.canHandle(runtimeUrl, runtimeDocument)) {
@@ -433,7 +451,7 @@ export function createDemoRuntime(options = {}) {
     try {
       const response = await discoverCurrentCandidates();
       observerCleanup = adapter.observeChanges(() => {
-        if (lifecycle !== "collecting") {
+        if (lifecycle !== "collecting" || !collectionEnabled) {
           return;
         }
         reportBackgroundWrite(
@@ -449,6 +467,11 @@ export function createDemoRuntime(options = {}) {
       );
       return response.data;
     } catch (error) {
+      if (error?.cause?.code === RESPONSE_ERROR_CODES.COLLECTION_PAUSED) {
+        lifecycle = "paused";
+        emitStatus("paused", "采集已暂停；恢复后可重新启动 Demo Runtime。");
+        throw error;
+      }
       lifecycle = "start-failed";
       cleanupCollectors();
       emitStatus("error", `Demo Runtime 启动失败：${error.message}`);
@@ -457,7 +480,7 @@ export function createDemoRuntime(options = {}) {
   }
 
   async function advanceScenario(candidateId, advanceMs = DEMO_SCENARIO_ADVANCE_MS) {
-    if (lifecycle !== "collecting") {
+    if (lifecycle !== "collecting" || !collectionEnabled) {
       throw new DemoRuntimeError("只有采集中的 Demo 会话可以推进场景。");
     }
     if (
@@ -526,6 +549,11 @@ export function createDemoRuntime(options = {}) {
   }
 
   async function performFinalize() {
+    if (!collectionEnabled) {
+      throw new DemoRuntimeError("采集已暂停，不能写入新的会话结算。", {
+        code: RESPONSE_ERROR_CODES.COLLECTION_PAUSED
+      });
+    }
     if (lifecycle === "finalized") {
       const repeated = await enqueueMessage(
         createSessionFinalizeMessage(sessionId, readWallNow()),

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createMessageRouter } from "../../background/messageRouter.js";
+import { MissedPathDeleteError } from "../../background/missedPathDelete.js";
+import { ReencounterFeedbackError } from "../../background/reencounterFeedback.js";
 import { ReencounterQueryError } from "../../background/reencounterQuery.js";
 import { ReencounterShownError } from "../../background/reencounterShown.js";
 import { createSessionFinalizeUseCase } from "../../background/sessionFinalize.js";
@@ -10,17 +12,22 @@ import {
   ACTIVE_CONTEXT_STATUSES,
   RESPONSE_ERROR_CODES,
   SCHEMA_VERSION,
+  REENCOUNTER_FEEDBACK_OUTCOMES,
   createActiveContextQueryMessage,
+  createMissedPathDeleteMessage,
   createCandidatesDiscoveredMessage,
   createMissedPathsQueryMessage,
   createReencounterQueryMessage,
+  createReencounterFeedbackMessage,
   createReencounterShownMessage,
   createSessionFinalizeMessage,
   createSignalsUpdatedMessage,
   isActiveContextQueryResponse,
   isCandidatesDiscoveredResponse,
   isMissedPathsQueryResponse,
+  isMissedPathDeleteResponse,
   isReencounterQueryResponse,
+  isReencounterFeedbackResponse,
   isReencounterShownResponse,
   isSessionFinalizeResponse,
   isSignalsUpdatedResponse
@@ -1201,6 +1208,202 @@ test("RE_ENCOUNTER_SHOWN maps storage failure and echoes requestId", async () =>
   assert.deepEqual(response.error, {
     code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
     message: "Unable to persist shown.",
+    retryable: true
+  });
+});
+
+test("routes repeated RE_ENCOUNTER_FEEDBACK idempotently and rejects conflicts", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const shown = createShownRequest("request-feedback-shown").payload;
+  await repository.saveReencounter(shown);
+  const router = createMessageRouter(repository);
+  const request = createReencounterFeedbackMessage(
+    shown.id,
+    REENCOUNTER_FEEDBACK_OUTCOMES.LATER,
+    10_000_000_200,
+    "request-feedback-repeat"
+  );
+
+  const first = await router.route(request);
+  const second = await router.route({
+    ...request,
+    requestId: "request-feedback-repeat-2",
+    payload: { ...request.payload, feedbackAt: 10_000_000_300 }
+  });
+  const conflict = await router.route(
+    createReencounterFeedbackMessage(
+      shown.id,
+      REENCOUNTER_FEEDBACK_OUTCOMES.NOT_RELEVANT,
+      10_000_000_400,
+      "request-feedback-conflict"
+    )
+  );
+
+  assert.equal(isReencounterFeedbackResponse(first), true);
+  assert.equal(first.requestId, request.requestId);
+  assert.equal(first.data.updated, true);
+  assert.deepEqual(second.data, { ...first.data, updated: false });
+  assert.equal(
+    conflict.error.code,
+    RESPONSE_ERROR_CODES.REENCOUNTER_FEEDBACK_CONFLICT
+  );
+  assert.deepEqual(await repository.getReencounter(shown.id), {
+    ...shown,
+    outcome: REENCOUNTER_FEEDBACK_OUTCOMES.LATER,
+    feedbackAt: 10_000_000_200
+  });
+});
+
+test("RE_ENCOUNTER_FEEDBACK rejects invalid payload/version and unknown records", async () => {
+  let executionCount = 0;
+  const router = createMessageRouter(
+    { async listMissedPaths() { return []; } },
+    {
+      reencounterFeedbackUseCase: {
+        async execute() {
+          executionCount += 1;
+          return {};
+        }
+      }
+    }
+  );
+  const request = createReencounterFeedbackMessage(
+    "shown-missing",
+    REENCOUNTER_FEEDBACK_OUTCOMES.OPENED,
+    500,
+    "request-feedback-invalid"
+  );
+  const invalid = await router.route({
+    ...request,
+    payload: { ...request.payload, outcome: "DISMISSED" }
+  });
+  const unknownVersion = await router.route({
+    ...request,
+    schemaVersion: SCHEMA_VERSION + 1
+  });
+  assert.equal(executionCount, 0);
+  assert.equal(invalid.error.code, RESPONSE_ERROR_CODES.INVALID_REQUEST);
+  assert.equal(
+    unknownVersion.error.code,
+    RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED
+  );
+
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const unknown = await createMessageRouter(repository).route(request);
+  assert.equal(unknown.requestId, request.requestId);
+  assert.equal(
+    unknown.error.code,
+    RESPONSE_ERROR_CODES.REENCOUNTER_NOT_FOUND
+  );
+});
+
+test("RE_ENCOUNTER_FEEDBACK maps storage failure and echoes requestId", async () => {
+  const router = createMessageRouter(
+    { async listMissedPaths() { return []; } },
+    {
+      reencounterFeedbackUseCase: {
+        async execute() {
+          throw new ReencounterFeedbackError(
+            RESPONSE_ERROR_CODES.STORAGE_ERROR,
+            "Unable to persist feedback.",
+            true
+          );
+        }
+      }
+    }
+  );
+  const request = createReencounterFeedbackMessage(
+    "shown-1",
+    REENCOUNTER_FEEDBACK_OUTCOMES.OPENED,
+    500,
+    "request-feedback-storage"
+  );
+  const response = await router.route(request);
+
+  assert.equal(response.requestId, request.requestId);
+  assert.deepEqual(response.error, {
+    code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+    message: "Unable to persist feedback.",
+    retryable: true
+  });
+});
+
+test("routes MISSED_PATH_DELETE and removes linked Re-encounters idempotently", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.saveMissedPath(createMissedPath());
+  await repository.saveReencounter(createShownRequest("shown-for-delete").payload);
+  const router = createMessageRouter(repository);
+  const firstRequest = createMissedPathDeleteMessage(
+    "missed-1",
+    700,
+    "request-delete-first"
+  );
+  const repeatedRequest = createMissedPathDeleteMessage(
+    "missed-1",
+    800,
+    "request-delete-repeated"
+  );
+
+  const first = await router.route(firstRequest);
+  const repeated = await router.route(repeatedRequest);
+  assert.equal(isMissedPathDeleteResponse(first), true);
+  assert.deepEqual(first.data, { missedPathId: "missed-1", deleted: true });
+  assert.deepEqual(repeated.data, {
+    missedPathId: "missed-1",
+    deleted: false
+  });
+  assert.deepEqual(await repository.listMissedPaths(), []);
+  assert.deepEqual(await repository.listReencounters(), []);
+});
+
+test("MISSED_PATH_DELETE rejects invalid payload/version and maps storage failure", async () => {
+  let executionCount = 0;
+  const router = createMessageRouter(
+    { async listMissedPaths() { return []; } },
+    {
+      missedPathDeleteUseCase: {
+        async execute() {
+          executionCount += 1;
+          throw new MissedPathDeleteError(
+            RESPONSE_ERROR_CODES.STORAGE_ERROR,
+            "Unable to delete.",
+            true
+          );
+        }
+      }
+    }
+  );
+  const request = createMissedPathDeleteMessage(
+    "missed-1",
+    700,
+    "request-delete-invalid"
+  );
+  const invalid = await router.route({
+    ...request,
+    payload: { ...request.payload, requestedAt: -1 }
+  });
+  const unknownVersion = await router.route({
+    ...request,
+    schemaVersion: SCHEMA_VERSION + 1
+  });
+  const storage = await router.route(request);
+
+  assert.equal(executionCount, 1);
+  assert.equal(invalid.error.code, RESPONSE_ERROR_CODES.INVALID_REQUEST);
+  assert.equal(
+    unknownVersion.error.code,
+    RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED
+  );
+  assert.equal(storage.requestId, request.requestId);
+  assert.deepEqual(storage.error, {
+    code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+    message: "Unable to delete.",
     retryable: true
   });
 });

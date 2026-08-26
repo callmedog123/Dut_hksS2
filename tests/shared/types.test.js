@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   CONSIDERATION_REASON_CODES,
+  DEFAULT_SETTINGS_V1,
   MISSED_PATH_STATUSES,
+  REENCOUNTER_FEEDBACK_OUTCOMES,
   REENCOUNTER_OUTCOMES,
   REENCOUNTER_REASON_CODES,
   SCHEMA_VERSION,
@@ -12,9 +14,11 @@ import {
   isConsiderationReasonV1,
   isMissedPathV1,
   isRankedReencounterV1,
+  isReencounterFeedbackV1,
   isReencounterRecordV1,
   isReencounterReasonV1,
-  isSearchContextV1
+  isSearchContextV1,
+  isSettingsV1
 } from "../../shared/types.js";
 import { MESSAGE_SCHEMA_VERSION } from "../../shared/messages.js";
 
@@ -316,4 +320,56 @@ test("validates strict durable ReencounterRecordV1 with optional outcome", () =>
   for (const record of invalidRecords) {
     assert.equal(isReencounterRecordV1(record), false);
   }
+});
+
+test("provides and validates one strict default SettingsV1", () => {
+  assert.equal(isSettingsV1(DEFAULT_SETTINGS_V1), true);
+  assert.deepEqual(DEFAULT_SETTINGS_V1, {
+    enabled: true,
+    allowlist: [],
+    blocklist: [],
+    thresholds: { consideration: 0.55, reencounter: 0.6 },
+    demoMode: false
+  });
+  for (const settings of [
+    { ...DEFAULT_SETTINGS_V1, enabled: "yes" },
+    { ...DEFAULT_SETTINGS_V1, allowlist: [""] },
+    {
+      ...DEFAULT_SETTINGS_V1,
+      thresholds: { ...DEFAULT_SETTINGS_V1.thresholds, consideration: 2 }
+    },
+    { ...DEFAULT_SETTINGS_V1, extra: true }
+  ]) {
+    assert.equal(isSettingsV1(settings), false);
+  }
+});
+
+test("validates strict feedback and backward-compatible Reencounter records", () => {
+  const feedback = {
+    reencounterId: "shown-1",
+    outcome: REENCOUNTER_FEEDBACK_OUTCOMES.NOT_RELEVANT,
+    feedbackAt: 400
+  };
+  assert.equal(isReencounterFeedbackV1(feedback), true);
+  assert.equal(
+    isReencounterRecordV1({
+      ...validReencounterRecord,
+      outcome: feedback.outcome,
+      feedbackAt: feedback.feedbackAt
+    }),
+    true
+  );
+
+  for (const invalid of [
+    { ...feedback, reencounterId: "" },
+    { ...feedback, outcome: REENCOUNTER_OUTCOMES.DISMISSED },
+    { ...feedback, feedbackAt: -1 },
+    { ...feedback, extra: true }
+  ]) {
+    assert.equal(isReencounterFeedbackV1(invalid), false);
+  }
+  assert.equal(
+    isReencounterRecordV1({ ...validReencounterRecord, feedbackAt: 400 }),
+    false
+  );
 });

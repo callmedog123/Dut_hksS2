@@ -4,10 +4,13 @@ import test from "node:test";
 import { createSessionManager } from "../../background/sessionManager.js";
 import {
   ACTIVE_CONTEXT_STATUSES,
+  REENCOUNTER_FEEDBACK_OUTCOMES,
   createActiveContextQueryMessage,
   createCandidateChosenMessage,
   createCandidatesDiscoveredMessage,
+  createMissedPathDeleteMessage,
   createReencounterQueryMessage,
+  createReencounterFeedbackMessage,
   createReencounterShownMessage,
   createSessionFinalizeMessage,
   createSignalsUpdatedMessage,
@@ -572,6 +575,109 @@ test("persisted Re-encounter cooldown remains active after Worker restart", asyn
     assert.equal(restoredShown[0].missedPathId, "missed-1");
     assert.equal(restoredShown[0].shownAt, NOW);
     assert.deepEqual(restoredShown[0].triggerContext, context);
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
+test("RE_ENCOUNTER_FEEDBACK survives Worker restart and keeps LATER cooldown", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+
+  try {
+    const repository = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    await repository.saveMissedPath(createMissedPath());
+    const { outcome: _legacyOutcome, ...shown } = createReencounter();
+    await repository.saveReencounter({
+      ...shown,
+      shownAt: 1,
+      triggerContext: createContext(1)
+    });
+
+    const firstWorker = await loadServiceWorker("feedback-first");
+    const feedbackRequest = createReencounterFeedbackMessage(
+      shown.id,
+      REENCOUNTER_FEEDBACK_OUTCOMES.LATER,
+      NOW,
+      "request-feedback-first"
+    );
+    const feedbackResponse = await dispatchAsync(firstWorker, feedbackRequest);
+    assert.equal(feedbackResponse.requestId, feedbackRequest.requestId);
+    assert.equal(feedbackResponse.data.updated, true);
+
+    const restartedWorker = await loadServiceWorker("feedback-restarted");
+    const repeated = await dispatchAsync(
+      restartedWorker,
+      createReencounterFeedbackMessage(
+        shown.id,
+        REENCOUNTER_FEEDBACK_OUTCOMES.LATER,
+        NOW + 1_000,
+        "request-feedback-repeated"
+      )
+    );
+    assert.deepEqual(repeated.data, {
+      reencounterId: shown.id,
+      outcome: REENCOUNTER_FEEDBACK_OUTCOMES.LATER,
+      feedbackAt: NOW,
+      updated: false
+    });
+
+    const queryResponse = await dispatchAsync(
+      restartedWorker,
+      createReencounterQueryMessage(
+        createContext(NOW),
+        3,
+        "request-feedback-cooldown"
+      )
+    );
+    assert.deepEqual(queryResponse.data, { reencounters: [] });
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
+test("MISSED_PATH_DELETE remains deleted after Worker restart", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+
+  try {
+    const repository = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    await repository.saveMissedPath(createMissedPath());
+    await repository.saveReencounter(createReencounter());
+
+    const firstWorker = await loadServiceWorker("delete-first");
+    const request = createMissedPathDeleteMessage(
+      "missed-1",
+      NOW,
+      "request-delete-first"
+    );
+    const response = await dispatchAsync(firstWorker, request);
+    assert.deepEqual(response.data, {
+      missedPathId: "missed-1",
+      deleted: true
+    });
+
+    const restartedWorker = await loadServiceWorker("delete-restarted");
+    const repeated = await dispatchAsync(
+      restartedWorker,
+      createMissedPathDeleteMessage(
+        "missed-1",
+        NOW + 1,
+        "request-delete-repeated"
+      )
+    );
+    assert.equal(repeated.data.deleted, false);
+    const restoredRepository = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    assert.deepEqual(await restoredRepository.listMissedPaths(), []);
+    assert.deepEqual(await restoredRepository.listReencounters(), []);
   } finally {
     delete globalThis.chrome;
     delete globalThis.indexedDB;

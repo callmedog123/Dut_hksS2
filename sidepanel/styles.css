@@ -201,6 +201,30 @@ body {
   font-size: 13px;
 }
 
+.card-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.delete-status {
+  min-height: 1.2em;
+  margin: 8px 0 0;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.delete-status[data-state="error"] {
+  color: #b42318;
+}
+
+.settings-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .empty {
   margin: 14px 0 0;
   padding: 16px 12px;

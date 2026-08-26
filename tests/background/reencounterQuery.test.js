@@ -89,7 +89,7 @@ test("reads Repository state and returns ranked candidates without writing", asy
   assert.equal(adapter.commitCount, commitsBeforeQuery);
 });
 
-test("aggregates latest shownAt and only DISMISSED outcomes as penalties", async () => {
+test("uses LATER feedbackAt for cooldown and NOT_RELEVANT as a penalty", async () => {
   let receivedEntries;
   const repository = {
     async listMissedPaths() {
@@ -98,8 +98,15 @@ test("aggregates latest shownAt and only DISMISSED outcomes as penalties", async
     async listReencounters() {
       return [
         createHistory("history-1", 100, "DISMISSED"),
-        createHistory("history-2", 300, "LATER"),
-        createHistory("history-3", 200, "OPENED")
+        {
+          ...createHistory("history-2", 300, "LATER"),
+          feedbackAt: 500
+        },
+        createHistory("history-3", 200, "OPENED"),
+        {
+          ...createHistory("history-4", 400, "NOT_RELEVANT"),
+          feedbackAt: 450
+        }
       ];
     }
   };
@@ -112,8 +119,8 @@ test("aggregates latest shownAt and only DISMISSED outcomes as penalties", async
 
   await useCase.execute({ context: createContext(), limit: 3 });
 
-  assert.equal(receivedEntries[0].lastShownAt, 300);
-  assert.equal(receivedEntries[0].dismissalCount, 1);
+  assert.equal(receivedEntries[0].lastShownAt, 500);
+  assert.equal(receivedEntries[0].dismissalCount, 2);
 });
 
 test("returns an empty list when there are no Missed Paths", async () => {

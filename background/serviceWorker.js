@@ -39,6 +39,12 @@ const messageRouter = createMessageRouter({
   getActiveContext() {
     return getRepository().getActiveContext();
   },
+  getSettings() {
+    return getRepository().getSettings();
+  },
+  saveSettings(settings) {
+    return getRepository().saveSettings(settings);
+  },
   mergeDiscoveredCandidates(payload) {
     return getRepository().mergeDiscoveredCandidates(payload);
   },
@@ -47,6 +53,9 @@ const messageRouter = createMessageRouter({
   },
   listMissedPaths() {
     return getRepository().listMissedPaths();
+  },
+  deleteMissedPath(id) {
+    return getRepository().deleteMissedPath(id);
   },
   listReencounters() {
     return getRepository().listReencounters();
@@ -85,13 +94,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (isCandidateChosenMessage(message)) {
-    getSessionManager()
-      .recordCandidateChosen(
-        message.payload.sessionId,
-        message.payload.candidateId,
-        message.payload.chosenAt
-      )
+    getRepository()
+      .getSettings()
+      .then((settings) => {
+        if (!settings.enabled) {
+          sendResponse(
+            createErrorResponseMessage(message.requestId, {
+              code: RESPONSE_ERROR_CODES.COLLECTION_PAUSED,
+              message: "Collection is paused in Settings.",
+              retryable: false
+            })
+          );
+          return null;
+        }
+        return getSessionManager().recordCandidateChosen(
+          message.payload.sessionId,
+          message.payload.candidateId,
+          message.payload.chosenAt
+        );
+      })
       .then((candidateChosen) => {
+        if (candidateChosen === null) {
+          return;
+        }
         sendResponse(
           createSuccessResponseMessage(message.requestId, {
             candidateChosen
@@ -117,11 +142,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (
     message?.type !== MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY &&
     message?.type !== MESSAGE_TYPES.CANDIDATES_DISCOVERED &&
+    message?.type !== MESSAGE_TYPES.MISSED_PATH_DELETE &&
     message?.type !== MESSAGE_TYPES.MISSED_PATHS_QUERY &&
     message?.type !== MESSAGE_TYPES.RE_ENCOUNTER_FEEDBACK &&
     message?.type !== MESSAGE_TYPES.RE_ENCOUNTER_QUERY &&
     message?.type !== MESSAGE_TYPES.RE_ENCOUNTER_SHOWN &&
     message?.type !== MESSAGE_TYPES.SESSION_FINALIZE &&
+    message?.type !== MESSAGE_TYPES.SETTINGS_UPDATE &&
     message?.type !== MESSAGE_TYPES.SIGNALS_UPDATED
   ) {
     return false;

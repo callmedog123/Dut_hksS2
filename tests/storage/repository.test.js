@@ -7,7 +7,7 @@ import {
   RepositoryVersionError,
   createRepository
 } from "../../storage/repository.js";
-import { SCHEMA_VERSION } from "../../shared/types.js";
+import { DEFAULT_SETTINGS_V1, SCHEMA_VERSION } from "../../shared/types.js";
 import { createTransactionalMemoryStorageAdapter } from "./fixtures/memoryStorageAdapter.js";
 
 function createCandidate(overrides = {}) {
@@ -123,6 +123,13 @@ function createSettings(overrides = {}) {
     ...overrides
   };
 }
+
+test("returns strict enabled defaults when Settings have not been persisted", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  assert.deepEqual(await repository.getSettings(), DEFAULT_SETTINGS_V1);
+});
 
 test("initializes schemaVersion and provides CRUD for every minimal record", async () => {
   const adapter = createTransactionalMemoryStorageAdapter();
@@ -383,6 +390,138 @@ test("shown storage failure rolls back without a partial record", async () => {
     (error) => error === failure
   );
   assert.equal(await repository.getReencounter("shown-fail"), null);
+});
+
+test("records every Re-encounter feedback outcome and preserves first feedback", async () => {
+  for (const outcome of ["OPENED", "LATER", "NOT_RELEVANT"]) {
+    const adapter = createTransactionalMemoryStorageAdapter();
+    const repository = createRepository(adapter);
+    const reencounter = createReencounter({ id: `feedback-${outcome}` });
+    await repository.saveReencounter(reencounter);
+
+    assert.deepEqual(
+      await repository.recordReencounterFeedback({
+        reencounterId: reencounter.id,
+        outcome,
+        feedbackAt: 500
+      }),
+      {
+        reencounterId: reencounter.id,
+        outcome,
+        feedbackAt: 500,
+        updated: true
+      }
+    );
+    const commitsAfterFirst = adapter.commitCount;
+    assert.deepEqual(
+      await repository.recordReencounterFeedback({
+        reencounterId: reencounter.id,
+        outcome,
+        feedbackAt: 600
+      }),
+      {
+        reencounterId: reencounter.id,
+        outcome,
+        feedbackAt: 500,
+        updated: false
+      }
+    );
+    assert.equal(adapter.commitCount, commitsAfterFirst);
+    assert.deepEqual(await repository.getReencounter(reencounter.id), {
+      ...reencounter,
+      outcome,
+      feedbackAt: 500
+    });
+  }
+});
+
+test("rejects unknown, invalid, and conflicting Re-encounter feedback", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await assert.rejects(
+    () =>
+      repository.recordReencounterFeedback({
+        reencounterId: "missing",
+        outcome: "LATER",
+        feedbackAt: 500
+      }),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      error.code === "REENCOUNTER_NOT_FOUND"
+  );
+  await assert.rejects(
+    () =>
+      repository.recordReencounterFeedback({
+        reencounterId: "missing",
+        outcome: "DISMISSED",
+        feedbackAt: 500
+      }),
+    RepositoryDataError
+  );
+
+  const reencounter = createReencounter({ id: "feedback-conflict" });
+  await repository.saveReencounter(reencounter);
+  await repository.recordReencounterFeedback({
+    reencounterId: reencounter.id,
+    outcome: "LATER",
+    feedbackAt: 500
+  });
+  await assert.rejects(
+    () =>
+      repository.recordReencounterFeedback({
+        reencounterId: reencounter.id,
+        outcome: "NOT_RELEVANT",
+        feedbackAt: 600
+      }),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      error.code === "REENCOUNTER_FEEDBACK_CONFLICT"
+  );
+  assert.deepEqual(await repository.getReencounter(reencounter.id), {
+    ...reencounter,
+    outcome: "LATER",
+    feedbackAt: 500
+  });
+});
+
+test("upgrades legacy outcome-only feedback and rolls back failed feedback", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  const legacy = createReencounter({
+    id: "feedback-legacy",
+    outcome: "LATER"
+  });
+  await repository.saveReencounter(legacy);
+  assert.equal(
+    (
+      await repository.recordReencounterFeedback({
+        reencounterId: legacy.id,
+        outcome: "LATER",
+        feedbackAt: 500
+      })
+    ).updated,
+    true
+  );
+  assert.deepEqual(await repository.getReencounter(legacy.id), {
+    ...legacy,
+    feedbackAt: 500
+  });
+
+  const rollback = createReencounter({ id: "feedback-rollback" });
+  await repository.saveReencounter(rollback);
+  const failure = new Error("feedback commit failed");
+  adapter.failNextCommit(failure);
+  await assert.rejects(
+    () =>
+      repository.recordReencounterFeedback({
+        reencounterId: rollback.id,
+        outcome: "OPENED",
+        feedbackAt: 600
+      }),
+    (error) => error === failure
+  );
+  assert.deepEqual(await repository.getReencounter(rollback.id), rollback);
 });
 
 test("repeated writes are idempotent and updates replace one record", async () => {
@@ -931,7 +1070,7 @@ test("single-record deletes remove records and are idempotent", async () => {
   assert.equal(await repository.getActiveContext(), null);
   assert.equal(await repository.getChosen("chosen-1"), null);
   assert.equal(await repository.getReencounter("reencounter-1"), null);
-  assert.equal(await repository.getSettings(), null);
+  assert.deepEqual(await repository.getSettings(), DEFAULT_SETTINGS_V1);
   assert.equal(await repository.deleteSession("session-1"), false);
 });
 
@@ -966,7 +1105,7 @@ test("deleteAll clears domain data but keeps the compatible schemaVersion", asyn
   assert.deepEqual(await repository.listMissedPaths(), []);
   assert.deepEqual(await repository.listReencounters(), []);
   assert.equal(await repository.getActiveContext(), null);
-  assert.equal(await repository.getSettings(), null);
+  assert.deepEqual(await repository.getSettings(), DEFAULT_SETTINGS_V1);
 });
 
 test("rejects incompatible schemaVersion without writing", async () => {
