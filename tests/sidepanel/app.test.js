@@ -170,7 +170,7 @@ function createMissedPath(overrides = {}) {
     reasons: [
       {
         code: "LONG_EXPOSURE",
-        label: "Aggregated visible time contributed to consideration.",
+        label: "较长的累计可见时间表明你曾认真考虑该结果。",
         contribution: 0.3
       }
     ],
@@ -669,6 +669,28 @@ test("ViewModel mapping safely falls back for an unknown reason code", () => {
   );
 
   assert.deepEqual(viewModel.reasons, [UNKNOWN_REASON_LABEL]);
+});
+
+test("ViewModel localizes persisted English consideration reason labels", () => {
+  const viewModel = toMissedPathViewModel(
+    createMissedPath({
+      reasons: [
+        { code: "LONG_EXPOSURE", label: "legacy English label" },
+        { code: "LONG_HOVER", label: "legacy English label" },
+        { code: "RETURN_VIEW", label: "legacy English label" },
+        { code: "REPEATED_HOVER", label: "legacy English label" },
+        { code: "NOT_CLICKED", label: "legacy English label" }
+      ]
+    })
+  );
+
+  assert.deepEqual(viewModel.reasons, [
+    "较长的累计可见时间表明你曾认真考虑该结果。",
+    "较长的累计悬停时间表明你曾认真考虑该结果。",
+    "再次回看表明你曾认真考虑该结果。",
+    "多次悬停表明你曾反复考虑该结果。",
+    "你在本次搜索中最终没有选择该结果。"
+  ]);
 });
 
 test("shows Active Context loading before sending a Re-encounter query", () => {

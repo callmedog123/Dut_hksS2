@@ -168,7 +168,7 @@ test("strong return_view contributes its full frozen weight", () => {
     result.reasons.find((reason) => reason.code === "RETURN_VIEW"),
     {
       code: "RETURN_VIEW",
-      label: "Returning to the Candidate contributed to consideration.",
+      label: "再次回看表明你曾认真考虑该结果。",
       contribution: 0.25
     }
   );

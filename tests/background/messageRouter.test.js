@@ -63,12 +63,12 @@ function createMissedPath() {
     reasons: [
       {
         code: "LONG_EXPOSURE",
-        label: "Aggregated visible time contributed to consideration.",
+        label: "较长的累计可见时间表明你曾认真考虑该结果。",
         contribution: 0.3
       },
       {
         code: "NOT_CLICKED",
-        label: "The Candidate was not chosen in this session.",
+        label: "你在本次搜索中最终没有选择该结果。",
         contribution: 0
       }
     ],

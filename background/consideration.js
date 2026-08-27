@@ -98,34 +98,34 @@ export function calculateConsideration(signals) {
   addReason(
     reasons,
     "LONG_EXPOSURE",
-    "Aggregated visible time contributed to consideration.",
+    "较长的累计可见时间表明你曾认真考虑该结果。",
     normalized.exposure,
     weights.exposure
   );
   addReason(
     reasons,
     "LONG_HOVER",
-    "Aggregated hover time contributed to consideration.",
+    "较长的累计悬停时间表明你曾认真考虑该结果。",
     normalized.hover,
     weights.hover
   );
   addReason(
     reasons,
     "RETURN_VIEW",
-    "Returning to the Candidate contributed to consideration.",
+    "再次回看表明你曾认真考虑该结果。",
     normalized.returnView,
     weights.returnView
   );
   addReason(
     reasons,
     "REPEATED_HOVER",
-    "Repeated hover entries contributed to consideration.",
+    "多次悬停表明你曾反复考虑该结果。",
     normalized.repeatedHover,
     weights.repeatedHover
   );
   reasons.push({
     code: "NOT_CLICKED",
-    label: "The Candidate was not chosen in this session.",
+    label: "你在本次搜索中最终没有选择该结果。",
     contribution: 0
   });
 

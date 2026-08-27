@@ -29,6 +29,13 @@ const KNOWN_CONSIDERATION_REASON_CODES = new Set([
   "RETURN_VIEW",
   "NOT_CLICKED"
 ]);
+const CONSIDERATION_REASON_LABELS = new Map([
+  ["LONG_EXPOSURE", "较长的累计可见时间表明你曾认真考虑该结果。"],
+  ["LONG_HOVER", "较长的累计悬停时间表明你曾认真考虑该结果。"],
+  ["REPEATED_HOVER", "多次悬停表明你曾反复考虑该结果。"],
+  ["RETURN_VIEW", "再次回看表明你曾认真考虑该结果。"],
+  ["NOT_CLICKED", "你在本次搜索中最终没有选择该结果。"]
+]);
 const KNOWN_REENCOUNTER_REASON_CODES = new Set([
   "CONTEXT_MATCH",
   "PRIOR_CONSIDERATION",
@@ -78,6 +85,19 @@ function mapReasonLabel(reason, knownCodes) {
   return reason.label.trim();
 }
 
+function mapConsiderationReasonLabel(reason) {
+  if (
+    !isRecord(reason) ||
+    typeof reason.code !== "string" ||
+    !KNOWN_CONSIDERATION_REASON_CODES.has(reason.code) ||
+    typeof reason.label !== "string" ||
+    reason.label.trim().length === 0
+  ) {
+    return UNKNOWN_REASON_LABEL;
+  }
+  return CONSIDERATION_REASON_LABELS.get(reason.code) ?? UNKNOWN_REASON_LABEL;
+}
+
 /**
  * Map a persisted MissedPath to display-only data. Business score, status and
  * reason calculation remain owned by the background layer.
@@ -102,9 +122,7 @@ export function toMissedPathViewModel(missedPath) {
       "candidate.source"
     ),
     reasons: Object.freeze(
-      missedPath.reasons.map((reason) =>
-        mapReasonLabel(reason, KNOWN_CONSIDERATION_REASON_CODES)
-      )
+      missedPath.reasons.map(mapConsiderationReasonLabel)
     )
   });
 }
