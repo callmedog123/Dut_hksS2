@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   ACTIVE_CONTEXT_STATUSES,
+  DEFAULT_SETTINGS_V1,
   MESSAGE_SCHEMA_VERSION,
   MESSAGE_TYPES,
   RESPONSE_ERROR_CODES,
@@ -11,6 +12,7 @@ import {
   createActiveContextQueryMessage,
   createCandidateChosenMessage,
   createCandidatesDiscoveredMessage,
+  createDataDeleteAllMessage,
   createErrorResponseMessage,
   createMissedPathDeleteMessage,
   createMissedPathsQueryMessage,
@@ -20,6 +22,7 @@ import {
   createReencounterFeedbackMessage,
   createReencounterShownMessage,
   createSessionFinalizeMessage,
+  createSettingsUpdateMessage,
   createSignalsUpdatedMessage,
   createSuccessResponseMessage,
   isActiveContextQueryMessage,
@@ -27,6 +30,8 @@ import {
   isCandidateChosenMessage,
   isCandidatesDiscoveredMessage,
   isCandidatesDiscoveredResponse,
+  isDataDeleteAllMessage,
+  isDataDeleteAllResponse,
   isMissedPathDeleteMessage,
   isMissedPathDeleteResponse,
   isMissedPathsQueryMessage,
@@ -42,6 +47,8 @@ import {
   isResponseMessage,
   isSessionFinalizeMessage,
   isSessionFinalizeResponse,
+  isSettingsUpdateMessage,
+  isSettingsUpdateResponse,
   isSignalsUpdatedMessage,
   isSignalsUpdatedResponse
 } from "../shared/messages.js";
@@ -111,10 +118,19 @@ const activeContextQuery = createActiveContextQueryMessage(
   "request-active-context"
 );
 const missedPathsQuery = createMissedPathsQueryMessage("request-missed-paths");
+const dataDeleteAll = createDataDeleteAllMessage(
+  1_400,
+  "request-data-delete-all"
+);
 const missedPathDelete = createMissedPathDeleteMessage(
   "missed-1",
   1_300,
   "request-missed-path-delete"
+);
+const settingsUpdate = createSettingsUpdateMessage(
+  false,
+  550,
+  "request-settings-update"
 );
 const reencounterContext = {
   query: "robot navigation",
@@ -228,6 +244,18 @@ const messageCases = [
     wrongType: MESSAGE_TYPES.PING
   },
   {
+    name: "DATA_DELETE_ALL",
+    message: dataDeleteAll,
+    validator: isDataDeleteAllMessage,
+    wrongType: MESSAGE_TYPES.PING
+  },
+  {
+    name: "SETTINGS_UPDATE",
+    message: settingsUpdate,
+    validator: isSettingsUpdateMessage,
+    wrongType: MESSAGE_TYPES.PING
+  },
+  {
     name: "MISSED_PATH_DELETE",
     message: missedPathDelete,
     validator: isMissedPathDeleteMessage,
@@ -247,6 +275,7 @@ test("keeps MESSAGE_TYPES frozen with the implemented v1 messages", () => {
     "ACTIVE_CONTEXT_QUERY",
     "CANDIDATES_DISCOVERED",
     "CANDIDATE_CHOSEN",
+    "DATA_DELETE_ALL",
     "MISSED_PATHS_QUERY",
     "MISSED_PATH_DELETE",
     "PING",
@@ -255,6 +284,7 @@ test("keeps MESSAGE_TYPES frozen with the implemented v1 messages", () => {
     "RE_ENCOUNTER_QUERY",
     "RE_ENCOUNTER_SHOWN",
     "SESSION_FINALIZE",
+    "SETTINGS_UPDATE",
     "SIGNALS_UPDATED"
   ]);
 });
@@ -912,6 +942,41 @@ test("RE_ENCOUNTER_SHOWN response strictly validates persisted identity", () => 
   );
 });
 
+test("creates and strictly validates DATA_DELETE_ALL", () => {
+  assert.equal(isDataDeleteAllMessage(dataDeleteAll), true);
+  assert.deepEqual(dataDeleteAll, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.DATA_DELETE_ALL,
+    requestId: "request-data-delete-all",
+    payload: { requestedAt: 1_400 }
+  });
+  assert.equal(
+    isDataDeleteAllMessage({
+      ...dataDeleteAll,
+      payload: { requestedAt: -1 }
+    }),
+    false
+  );
+  assert.equal(
+    isDataDeleteAllMessage({
+      ...dataDeleteAll,
+      payload: { ...dataDeleteAll.payload, extra: true }
+    }),
+    false
+  );
+  const response = createSuccessResponseMessage("clear-response", {
+    deleted: true
+  });
+  assert.equal(isDataDeleteAllResponse(response), true);
+  assert.equal(
+    isDataDeleteAllResponse({
+      ...response,
+      data: { deleted: "yes" }
+    }),
+    false
+  );
+});
+
 test("creates and strictly validates MISSED_PATH_DELETE", () => {
   assert.equal(isMissedPathDeleteMessage(missedPathDelete), true);
   assert.deepEqual(missedPathDelete, {
@@ -945,6 +1010,46 @@ test("creates and strictly validates MISSED_PATH_DELETE", () => {
   );
   assert.equal(
     isMissedPathDeleteResponse({
+      ...response,
+      data: { ...response.data, extra: true }
+    }),
+    false
+  );
+});
+
+test("creates and strictly validates SETTINGS_UPDATE", () => {
+  assert.equal(isSettingsUpdateMessage(settingsUpdate), true);
+  assert.deepEqual(settingsUpdate, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.SETTINGS_UPDATE,
+    requestId: "request-settings-update",
+    payload: { enabled: false, requestedAt: 550 }
+  });
+  for (const payload of [
+    { ...settingsUpdate.payload, enabled: "no" },
+    { ...settingsUpdate.payload, requestedAt: -1 },
+    { ...settingsUpdate.payload, extra: true }
+  ]) {
+    assert.equal(
+      isSettingsUpdateMessage({ ...settingsUpdate, payload }),
+      false
+    );
+  }
+
+  const response = createSuccessResponseMessage("settings-response", {
+    settings: { ...DEFAULT_SETTINGS_V1, enabled: false },
+    updated: true
+  });
+  assert.equal(isSettingsUpdateResponse(response), true);
+  assert.equal(
+    isSettingsUpdateResponse({
+      ...response,
+      data: { ...response.data, settings: { enabled: false } }
+    }),
+    false
+  );
+  assert.equal(
+    isSettingsUpdateResponse({
       ...response,
       data: { ...response.data, extra: true }
     }),

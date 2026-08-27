@@ -6,8 +6,20 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const validatorPath = path.resolve("scripts/validate-build.js");
+const BILIBILI_MATCH = "https://search.bilibili.com/*";
+const CONTENT_MODULE_RESOURCES = [
+  "content/bilibiliRuntime.js",
+  "content/adapters/bilibiliSearchAdapter.js",
+  "content/candidateBinding.js",
+  "content/eventCollector/click.js",
+  "content/eventCollector/hover.js",
+  "content/visibility.js",
+  "shared/messages.js",
+  "shared/types.js",
+  "shared/url.js"
+];
 
-function createBuildFixture(t, hostPermissions) {
+function createBuildFixture(t, overrides = {}) {
   const root = path.join(
     tmpdir(),
     `the-unclicked-build-${process.pid}-${Date.now()}-${Math.random()}`
@@ -18,9 +30,23 @@ function createBuildFixture(t, hostPermissions) {
   const manifest = {
     manifest_version: 3,
     permissions: ["sidePanel"],
-    host_permissions: hostPermissions,
+    host_permissions: [BILIBILI_MATCH],
+    content_scripts: [
+      {
+        matches: [BILIBILI_MATCH],
+        js: ["content/contentScript.js"],
+        run_at: "document_idle"
+      }
+    ],
+    web_accessible_resources: [
+      {
+        resources: CONTENT_MODULE_RESOURCES,
+        matches: [BILIBILI_MATCH]
+      }
+    ],
     background: { service_worker: "background/serviceWorker.js" },
-    side_panel: { default_path: "sidepanel/index.html" }
+    side_panel: { default_path: "sidepanel/index.html" },
+    ...overrides
   };
   writeFileSync(
     path.join(root, "manifest.json"),
@@ -33,6 +59,8 @@ function createBuildFixture(t, hostPermissions) {
     "sidepanel/index.html",
     "shared/messages.js",
     "content/demoRuntime.js",
+    "content/contentScript.js",
+    ...CONTENT_MODULE_RESOURCES,
     "sidepanel/app.js",
     "demo/index.html",
     "demo/app.js"
@@ -46,12 +74,27 @@ function createBuildFixture(t, hostPermissions) {
     'import "../content/demoRuntime.js";',
     "utf8"
   );
+  writeFileSync(
+    path.join(root, "content/contentScript.js"),
+    'const runtimeModuleUrl = chrome.runtime.getURL("content/bilibiliRuntime.js"); import(runtimeModuleUrl).then(({ startBilibiliRuntime }) => startBilibiliRuntime());',
+    "utf8"
+  );
+  writeFileSync(
+    path.join(root, "content/bilibiliRuntime.js"),
+    [
+      'import "./adapters/bilibiliSearchAdapter.js";',
+      'import "./eventCollector/click.js";',
+      'import "./eventCollector/hover.js";',
+      'import "./visibility.js";'
+    ].join("\n"),
+    "utf8"
+  );
 
   return root;
 }
 
 test("build validation accepts only the approved Bilibili search permission", (t) => {
-  const root = createBuildFixture(t, ["https://search.bilibili.com/*"]);
+  const root = createBuildFixture(t);
   const result = spawnSync(process.execPath, [validatorPath], {
     cwd: root,
     encoding: "utf8"
@@ -61,10 +104,9 @@ test("build validation accepts only the approved Bilibili search permission", (t
 });
 
 test("build validation rejects any additional host permission", (t) => {
-  const root = createBuildFixture(t, [
-    "https://search.bilibili.com/*",
-    "https://www.bilibili.com/*"
-  ]);
+  const root = createBuildFixture(t, {
+    host_permissions: [BILIBILI_MATCH, "https://www.bilibili.com/*"]
+  });
   const result = spawnSync(process.execPath, [validatorPath], {
     cwd: root,
     encoding: "utf8"
@@ -75,4 +117,47 @@ test("build validation rejects any additional host permission", (t) => {
     result.stderr,
     /host_permissions must contain only https:\/\/search\.bilibili\.com\/\*/u
   );
+});
+
+test("build validation rejects broad or second-site content script matches", (t) => {
+  const root = createBuildFixture(t, {
+    content_scripts: [
+      {
+        matches: ["<all_urls>"],
+        js: ["content/contentScript.js"],
+        run_at: "document_idle"
+      }
+    ]
+  });
+  const result = spawnSync(process.execPath, [validatorPath], {
+    cwd: root,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /one exact Bilibili isolated entry/u);
+});
+
+test("build validation rejects a second content script entry", (t) => {
+  const root = createBuildFixture(t, {
+    content_scripts: [
+      {
+        matches: [BILIBILI_MATCH],
+        js: ["content/contentScript.js"],
+        run_at: "document_idle"
+      },
+      {
+        matches: ["https://www.bilibili.com/*"],
+        js: ["content/contentScript.js"],
+        run_at: "document_idle"
+      }
+    ]
+  });
+  const result = spawnSync(process.execPath, [validatorPath], {
+    cwd: root,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /one exact Bilibili isolated entry/u);
 });

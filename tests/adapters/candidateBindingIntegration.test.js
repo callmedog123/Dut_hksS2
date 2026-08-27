@@ -207,20 +207,20 @@ test("Bilibili Adapter clears old-session bindings across SPA navigation", () =>
   );
   const newSessionElement = fixture.cards[0];
   observerHarness.notifyAll();
-  assert.deepEqual(events.slice(-2), [
-    {
-      type: "unbound",
-      id: "BV1FirstBind",
-      sessionId: "bilibili-session-1",
-      element: replacementElement
-    },
-    {
-      type: "bound",
-      id: "BV1NewSession",
-      sessionId: "bilibili-session-2",
-      element: newSessionElement
-    }
-  ]);
+  assert.deepEqual(events.at(-1), {
+    type: "unbound",
+    id: "BV1FirstBind",
+    sessionId: "bilibili-session-1",
+    element: replacementElement
+  });
+
+  adapter.extractCandidates(fixture.document);
+  assert.deepEqual(events.at(-1), {
+    type: "bound",
+    id: "BV1NewSession",
+    sessionId: "bilibili-session-2",
+    element: newSessionElement
+  });
 
   cleanup();
   cleanup();

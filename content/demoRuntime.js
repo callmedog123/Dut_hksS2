@@ -212,6 +212,11 @@ export function createDemoRuntime(options = {}) {
     if (response.ok !== true) {
       if (response.error.code === RESPONSE_ERROR_CODES.COLLECTION_PAUSED) {
         collectionEnabled = false;
+        if (lifecycle === "collecting" || lifecycle === "finalizing") {
+          lifecycle = "paused";
+          cleanupCollectors();
+          emitStatus("paused", "采集已暂停；已有数据仍可查看和删除。");
+        }
       }
       throw new DemoRuntimeError(
         `${message.type} 失败：${response.error.message}`,
@@ -584,6 +589,11 @@ export function createDemoRuntime(options = {}) {
       emitStatus("finalized", "会话结算成功，Side Panel 可查询真实结果。", response.data);
       return response.data;
     } catch (error) {
+      if (error?.cause?.code === RESPONSE_ERROR_CODES.COLLECTION_PAUSED) {
+        lifecycle = "paused";
+        emitStatus("paused", "采集已暂停；没有写入新的会话结算。");
+        throw error;
+      }
       lifecycle = "finalize-failed";
       emitStatus("error", `会话结算失败：${error.message}`);
       throw error;

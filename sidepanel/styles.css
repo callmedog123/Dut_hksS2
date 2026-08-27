@@ -225,6 +225,20 @@ body {
   margin-top: 10px;
 }
 
+.delete-all-confirmation {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #f0b4ae;
+  border-radius: 8px;
+  background: #fff6f5;
+}
+
+.delete-all-confirmation p {
+  margin: 0;
+  color: #912018;
+  font-size: 12px;
+}
+
 .empty {
   margin: 14px 0 0;
   padding: 16px 12px;

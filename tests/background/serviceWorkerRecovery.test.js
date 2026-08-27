@@ -8,11 +8,14 @@ import {
   createActiveContextQueryMessage,
   createCandidateChosenMessage,
   createCandidatesDiscoveredMessage,
+  createDataDeleteAllMessage,
   createMissedPathDeleteMessage,
+  createMissedPathsQueryMessage,
   createReencounterQueryMessage,
   createReencounterFeedbackMessage,
   createReencounterShownMessage,
   createSessionFinalizeMessage,
+  createSettingsUpdateMessage,
   createSignalsUpdatedMessage,
   isActiveContextQueryResponse
 } from "../../shared/messages.js";
@@ -678,6 +681,142 @@ test("MISSED_PATH_DELETE remains deleted after Worker restart", async () => {
     );
     assert.deepEqual(await restoredRepository.listMissedPaths(), []);
     assert.deepEqual(await restoredRepository.listReencounters(), []);
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
+test("paused Settings survive Worker restart and block every collection write", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+
+  try {
+    const repository = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    await repository.saveMissedPath(createMissedPath());
+    const firstWorker = await loadServiceWorker("settings-pause-first");
+    const paused = await dispatchAsync(
+      firstWorker,
+      createSettingsUpdateMessage(
+        false,
+        NOW,
+        "request-settings-pause"
+      )
+    );
+    assert.equal(paused.data.settings.enabled, false);
+
+    const restartedWorker = await loadServiceWorker("settings-pause-restarted");
+    const discovery = createCandidatesDiscoveredMessage(
+      "session-paused",
+      createContext(NOW),
+      [createCandidate({ sessionId: "session-paused" })],
+      NOW,
+      "request-paused-discovery"
+    );
+    const blockedMessages = [
+      discovery,
+      createSignalsUpdatedMessage(
+        { ...createSignals(), sessionId: "session-paused" },
+        NOW,
+        "request-paused-signals"
+      ),
+      createSessionFinalizeMessage(
+        "session-paused",
+        NOW,
+        "request-paused-finalize"
+      ),
+      createCandidateChosenMessage(
+        { id: "candidate-1", sessionId: "session-paused" },
+        NOW,
+        "request-paused-chosen"
+      )
+    ];
+    for (const message of blockedMessages) {
+      const response = await dispatchAsync(restartedWorker, message);
+      assert.equal(
+        response.error.code,
+        "COLLECTION_PAUSED",
+        message.type
+      );
+    }
+    const query = await dispatchAsync(
+      restartedWorker,
+      createMissedPathsQueryMessage("request-paused-existing-query")
+    );
+    assert.equal(query.data.missedPaths.length, 1);
+    assert.deepEqual(await repository.listSessions(), []);
+
+    const resumed = await dispatchAsync(
+      restartedWorker,
+      createSettingsUpdateMessage(
+        true,
+        NOW + 1,
+        "request-settings-resume"
+      )
+    );
+    assert.equal(resumed.data.settings.enabled, true);
+    const afterResumeWorker = await loadServiceWorker(
+      "settings-resume-restarted"
+    );
+    const accepted = await dispatchAsync(afterResumeWorker, discovery);
+    assert.equal(accepted.ok, true);
+    assert.equal((await repository.listSessions()).length, 1);
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
+test("DATA_DELETE_ALL stays empty after restart and preserves Settings", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+
+  try {
+    const repository = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    await repository.saveSession(createSession());
+    await createSessionManager(repository).finalizeSession("session-1", 500);
+    await repository.saveReencounter(createReencounter());
+    await repository.saveSettings({
+      enabled: false,
+      allowlist: ["example.com"],
+      blocklist: [],
+      thresholds: { consideration: 0.55, reencounter: 0.6 },
+      demoMode: false
+    });
+
+    const firstWorker = await loadServiceWorker("clear-first");
+    const first = await dispatchAsync(
+      firstWorker,
+      createDataDeleteAllMessage(NOW, "request-clear-first")
+    );
+    assert.equal(first.data.deleted, true);
+
+    const restartedWorker = await loadServiceWorker("clear-restarted");
+    const repeated = await dispatchAsync(
+      restartedWorker,
+      createDataDeleteAllMessage(NOW + 1, "request-clear-repeated")
+    );
+    assert.equal(repeated.data.deleted, false);
+    const restored = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    assert.deepEqual(await restored.listSessions(), []);
+    assert.deepEqual(await restored.listChosen(), []);
+    assert.deepEqual(await restored.listMissedPaths(), []);
+    assert.deepEqual(await restored.listReencounters(), []);
+    assert.equal(await restored.getActiveContext(), null);
+    assert.equal(await restored.getSessionFinalization("session-1"), null);
+    assert.deepEqual(await restored.getSettings(), {
+      enabled: false,
+      allowlist: ["example.com"],
+      blocklist: [],
+      thresholds: { consideration: 0.55, reencounter: 0.6 },
+      demoMode: false
+    });
   } finally {
     delete globalThis.chrome;
     delete globalThis.indexedDB;

@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createMessageRouter } from "../../background/messageRouter.js";
+import { DataDeleteAllError } from "../../background/dataDeleteAll.js";
 import { MissedPathDeleteError } from "../../background/missedPathDelete.js";
 import { ReencounterFeedbackError } from "../../background/reencounterFeedback.js";
 import { ReencounterQueryError } from "../../background/reencounterQuery.js";
 import { ReencounterShownError } from "../../background/reencounterShown.js";
+import { SettingsUpdateError } from "../../background/settingsUpdate.js";
 import { createSessionFinalizeUseCase } from "../../background/sessionFinalize.js";
 import { createSessionManager } from "../../background/sessionManager.js";
 import {
@@ -16,22 +18,27 @@ import {
   createActiveContextQueryMessage,
   createMissedPathDeleteMessage,
   createCandidatesDiscoveredMessage,
+  createDataDeleteAllMessage,
   createMissedPathsQueryMessage,
   createReencounterQueryMessage,
   createReencounterFeedbackMessage,
   createReencounterShownMessage,
   createSessionFinalizeMessage,
+  createSettingsUpdateMessage,
   createSignalsUpdatedMessage,
   isActiveContextQueryResponse,
   isCandidatesDiscoveredResponse,
+  isDataDeleteAllResponse,
   isMissedPathsQueryResponse,
   isMissedPathDeleteResponse,
   isReencounterQueryResponse,
   isReencounterFeedbackResponse,
   isReencounterShownResponse,
   isSessionFinalizeResponse,
+  isSettingsUpdateResponse,
   isSignalsUpdatedResponse
 } from "../../shared/messages.js";
+import { DEFAULT_SETTINGS_V1 } from "../../shared/types.js";
 import { createRepository } from "../../storage/repository.js";
 import { createTransactionalMemoryStorageAdapter } from "../storage/fixtures/memoryStorageAdapter.js";
 
@@ -1406,4 +1413,188 @@ test("MISSED_PATH_DELETE rejects invalid payload/version and maps storage failur
     message: "Unable to delete.",
     retryable: true
   });
+});
+
+test("routes SETTINGS_UPDATE while preserving complete Settings idempotently", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const custom = {
+    ...DEFAULT_SETTINGS_V1,
+    allowlist: ["example.com"],
+    demoMode: true
+  };
+  await repository.saveSettings(custom);
+  const router = createMessageRouter(repository);
+  const pause = createSettingsUpdateMessage(
+    false,
+    700,
+    "request-settings-pause"
+  );
+  const repeatedPause = createSettingsUpdateMessage(
+    false,
+    800,
+    "request-settings-pause-repeat"
+  );
+  const resume = createSettingsUpdateMessage(
+    true,
+    900,
+    "request-settings-resume"
+  );
+
+  const paused = await router.route(pause);
+  const repeated = await router.route(repeatedPause);
+  const resumed = await router.route(resume);
+  assert.equal(isSettingsUpdateResponse(paused), true);
+  assert.deepEqual(paused.data.settings, { ...custom, enabled: false });
+  assert.equal(paused.data.updated, true);
+  assert.equal(repeated.data.updated, false);
+  assert.deepEqual(resumed.data.settings, custom);
+  assert.deepEqual(await repository.getSettings(), custom);
+});
+
+test("SETTINGS_UPDATE rejects invalid payload/version and maps storage failure", async () => {
+  let executionCount = 0;
+  const router = createMessageRouter(
+    { async listMissedPaths() { return []; } },
+    {
+      settingsUpdateUseCase: {
+        async execute() {
+          executionCount += 1;
+          throw new SettingsUpdateError(
+            RESPONSE_ERROR_CODES.STORAGE_ERROR,
+            "Unable to save Settings.",
+            true
+          );
+        }
+      }
+    }
+  );
+  const request = createSettingsUpdateMessage(
+    false,
+    700,
+    "request-settings-invalid"
+  );
+  const invalid = await router.route({
+    ...request,
+    payload: { ...request.payload, enabled: "no" }
+  });
+  const unknownVersion = await router.route({
+    ...request,
+    schemaVersion: SCHEMA_VERSION + 1
+  });
+  const storage = await router.route(request);
+  assert.equal(executionCount, 1);
+  assert.equal(invalid.error.code, RESPONSE_ERROR_CODES.INVALID_REQUEST);
+  assert.equal(
+    unknownVersion.error.code,
+    RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED
+  );
+  assert.equal(storage.requestId, request.requestId);
+  assert.equal(storage.error.code, RESPONSE_ERROR_CODES.STORAGE_ERROR);
+  assert.equal(storage.error.retryable, true);
+});
+
+test("paused Settings block collection writes but keep queries and deletes available", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.saveSettings({ ...DEFAULT_SETTINGS_V1, enabled: false });
+  await repository.saveMissedPath(createMissedPath());
+  const router = createMessageRouter(repository);
+  const discovery = createCandidatesDiscoveredMessage(
+    "session-1",
+    createDiscoveryContext(),
+    [createDiscoveryCandidate()],
+    200,
+    "request-paused-discovery"
+  );
+
+  const blocked = await router.route(discovery);
+  const query = await router.route(
+    createMissedPathsQueryMessage("request-paused-query")
+  );
+  const deletion = await router.route(
+    createMissedPathDeleteMessage(
+      "missed-1",
+      300,
+      "request-paused-delete"
+    )
+  );
+  assert.equal(blocked.error.code, RESPONSE_ERROR_CODES.COLLECTION_PAUSED);
+  assert.deepEqual(await repository.listSessions(), []);
+  assert.equal(query.data.missedPaths.length, 1);
+  assert.equal(deletion.data.deleted, true);
+
+  await router.route(
+    createSettingsUpdateMessage(true, 400, "request-paused-resume")
+  );
+  const resumed = await router.route(discovery);
+  assert.equal(resumed.ok, true);
+  assert.equal((await repository.listSessions()).length, 1);
+});
+
+test("routes DATA_DELETE_ALL idempotently and preserves Settings", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const settings = { ...DEFAULT_SETTINGS_V1, enabled: false };
+  await repository.saveSettings(settings);
+  await repository.saveMissedPath(createMissedPath());
+  await repository.saveReencounter(createShownRequest("shown-clear").payload);
+  const router = createMessageRouter(repository);
+  const first = await router.route(
+    createDataDeleteAllMessage(700, "request-clear-first")
+  );
+  const repeated = await router.route(
+    createDataDeleteAllMessage(800, "request-clear-repeated")
+  );
+
+  assert.equal(isDataDeleteAllResponse(first), true);
+  assert.deepEqual(first.data, { deleted: true });
+  assert.deepEqual(repeated.data, { deleted: false });
+  assert.deepEqual(await repository.listMissedPaths(), []);
+  assert.deepEqual(await repository.listReencounters(), []);
+  assert.deepEqual(await repository.getSettings(), settings);
+});
+
+test("DATA_DELETE_ALL rejects invalid payload/version and maps storage failure", async () => {
+  let executionCount = 0;
+  const router = createMessageRouter(
+    { async listMissedPaths() { return []; } },
+    {
+      dataDeleteAllUseCase: {
+        async execute() {
+          executionCount += 1;
+          throw new DataDeleteAllError(
+            RESPONSE_ERROR_CODES.STORAGE_ERROR,
+            "Unable to clear data.",
+            true
+          );
+        }
+      }
+    }
+  );
+  const request = createDataDeleteAllMessage(
+    700,
+    "request-clear-invalid"
+  );
+  const invalid = await router.route({
+    ...request,
+    payload: { ...request.payload, extra: true }
+  });
+  const unknownVersion = await router.route({
+    ...request,
+    schemaVersion: SCHEMA_VERSION + 1
+  });
+  const storage = await router.route(request);
+  assert.equal(executionCount, 1);
+  assert.equal(invalid.error.code, RESPONSE_ERROR_CODES.INVALID_REQUEST);
+  assert.equal(
+    unknownVersion.error.code,
+    RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED
+  );
+  assert.equal(storage.requestId, request.requestId);
+  assert.equal(storage.error.code, RESPONSE_ERROR_CODES.STORAGE_ERROR);
+  assert.equal(storage.error.retryable, true);
 });

@@ -297,19 +297,23 @@ export function createBilibiliSearchAdapter(options = {}) {
       }
 
       const currentContextKey = readContextKey(adapterDocument);
-      const currentCandidates = extractCandidates(adapterDocument);
       if (currentContextKey !== activeContextKey) {
+        // Give the Runtime a clean boundary: unbind the old Session first and
+        // let it finalize before a later extraction binds the new SPA context.
+        bindingRegistry.clear();
         activeContextKey = currentContextKey;
+        const nextBindings = scanCandidateBindings(adapterDocument);
         knownIds = new Set(
-          currentCandidates.map((candidate) => candidate.id)
+          nextBindings.map((binding) => binding.candidate.id)
         );
         knownUrls = new Set(
-          currentCandidates.map((candidate) => candidate.url)
+          nextBindings.map((binding) => binding.candidate.url)
         );
         onCandidatesChanged();
         return;
       }
 
+      const currentCandidates = extractCandidates(adapterDocument);
       const newCandidates = currentCandidates.filter(
         (candidate) =>
           !knownIds.has(candidate.id) && !knownUrls.has(candidate.url)

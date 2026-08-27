@@ -5,6 +5,19 @@ const root = process.cwd();
 const manifestPath = path.join(root, "manifest.json");
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 const failures = [];
+const BILIBILI_MATCH = "https://search.bilibili.com/*";
+const CONTENT_SCRIPT_ENTRY = "content/contentScript.js";
+const CONTENT_MODULE_RESOURCES = [
+  "content/bilibiliRuntime.js",
+  "content/adapters/bilibiliSearchAdapter.js",
+  "content/candidateBinding.js",
+  "content/eventCollector/click.js",
+  "content/eventCollector/hover.js",
+  "content/visibility.js",
+  "shared/messages.js",
+  "shared/types.js",
+  "shared/url.js"
+];
 
 function check(condition, message) {
   if (!condition) {
@@ -19,20 +32,93 @@ check(
 );
 check(
   JSON.stringify(manifest.host_permissions) ===
-    JSON.stringify(["https://search.bilibili.com/*"]),
-  "host_permissions must contain only https://search.bilibili.com/*"
+    JSON.stringify([BILIBILI_MATCH]),
+  `host_permissions must contain only ${BILIBILI_MATCH}`
 );
-check(!("content_scripts" in manifest), "content_scripts must be absent");
+check(
+  !("optional_permissions" in manifest) &&
+    !("optional_host_permissions" in manifest),
+  "optional permissions must be absent"
+);
+check(
+  JSON.stringify(manifest.content_scripts) ===
+    JSON.stringify([
+      {
+        matches: [BILIBILI_MATCH],
+        js: [CONTENT_SCRIPT_ENTRY],
+        run_at: "document_idle"
+      }
+    ]),
+  "content_scripts must contain one exact Bilibili isolated entry"
+);
+check(
+  JSON.stringify(manifest.web_accessible_resources) ===
+    JSON.stringify([
+      {
+        resources: CONTENT_MODULE_RESOURCES,
+        matches: [BILIBILI_MATCH]
+      }
+    ]),
+  "web_accessible_resources must expose only the required Bilibili modules"
+);
+
+const declaredPatterns = [
+  ...(manifest.host_permissions ?? []),
+  ...(manifest.optional_host_permissions ?? []),
+  ...(manifest.content_scripts ?? []).flatMap((entry) => entry.matches ?? []),
+  ...(manifest.web_accessible_resources ?? []).flatMap(
+    (entry) => entry.matches ?? []
+  )
+];
+check(
+  declaredPatterns.every((pattern) => pattern === BILIBILI_MATCH),
+  "all declared URL patterns must be the exact approved Bilibili search match"
+);
 
 const requiredPaths = [
   manifest.background?.service_worker,
   manifest.side_panel?.default_path,
   "shared/messages.js",
   "content/demoRuntime.js",
+  CONTENT_SCRIPT_ENTRY,
+  ...CONTENT_MODULE_RESOURCES,
   "sidepanel/app.js",
   "demo/index.html",
   "demo/app.js"
 ];
+
+const contentEntryPath = path.join(root, CONTENT_SCRIPT_ENTRY);
+if (fs.existsSync(contentEntryPath)) {
+  const contentEntry = fs.readFileSync(contentEntryPath, "utf8");
+  check(
+    contentEntry.includes(
+      'chrome.runtime.getURL("content/bilibiliRuntime.js")'
+    ) &&
+      contentEntry.includes("import(runtimeModuleUrl)") &&
+      contentEntry.includes("startBilibiliRuntime"),
+    "content script entry must load and start the Bilibili ES Module Runtime"
+  );
+}
+
+const bilibiliRuntimePath = path.join(root, "content/bilibiliRuntime.js");
+if (fs.existsSync(bilibiliRuntimePath)) {
+  const runtimeSource = fs.readFileSync(bilibiliRuntimePath, "utf8");
+  for (const requiredImport of [
+    "./adapters/bilibiliSearchAdapter.js",
+    "./eventCollector/click.js",
+    "./eventCollector/hover.js",
+    "./visibility.js"
+  ]) {
+    check(
+      runtimeSource.includes(requiredImport),
+      `Bilibili Runtime must reuse ${requiredImport}`
+    );
+  }
+  check(
+    !/localStorage|indexedDB|chrome\.storage/iu.test(runtimeSource),
+    "Bilibili Runtime must not access browser storage directly"
+  );
+}
 
 const demoAppPath = path.join(root, "demo/app.js");
 if (fs.existsSync(demoAppPath)) {

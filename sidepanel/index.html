@@ -105,7 +105,7 @@
           role="status"
           aria-live="polite"
         >
-          默认启用；暂停不会影响查看或删除已有记录。
+          可暂停或恢复采集；已有记录始终可以查看和删除。
         </p>
         <div class="settings-actions">
           <button type="button" class="btn btn-quiet" id="pause-collection-button">
@@ -114,6 +114,33 @@
           <button type="button" class="btn btn-quiet" id="resume-collection-button">
             恢复采集
           </button>
+        </div>
+      </section>
+
+      <section class="session data-control" aria-labelledby="data-control-title">
+        <h2 class="section-title" id="data-control-title">本地数据</h2>
+        <p
+          class="status"
+          id="data-delete-all-status"
+          data-state="idle"
+          role="status"
+          aria-live="polite"
+        >
+          可清空业务数据；采集设置会保留。
+        </p>
+        <button type="button" class="btn btn-quiet" id="data-delete-all-button">
+          清空全部本地数据
+        </button>
+        <div class="delete-all-confirmation" id="data-delete-all-confirmation" hidden>
+          <p>确认清空所有 Session、Chosen、Missed Path 和重逢记录？</p>
+          <div class="settings-actions">
+            <button type="button" class="btn" id="data-delete-all-confirm-button">
+              确认清空
+            </button>
+            <button type="button" class="btn btn-quiet" id="data-delete-all-cancel-button">
+              取消
+            </button>
+          </div>
         </div>
       </section>
 

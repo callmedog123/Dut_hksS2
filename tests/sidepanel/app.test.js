@@ -13,16 +13,19 @@ import {
 } from "../../sidepanel/app.js";
 import {
   ACTIVE_CONTEXT_STATUSES,
+  DEFAULT_SETTINGS_V1,
   REENCOUNTER_FEEDBACK_OUTCOMES,
   RESPONSE_ERROR_CODES,
   createErrorResponseMessage,
   createSuccessResponseMessage,
   isActiveContextQueryMessage,
+  isDataDeleteAllMessage,
   isMissedPathDeleteMessage,
   isMissedPathsQueryMessage,
   isReencounterQueryMessage,
   isReencounterFeedbackMessage,
-  isReencounterShownMessage
+  isReencounterShownMessage,
+  isSettingsUpdateMessage
 } from "../../shared/messages.js";
 
 class FixtureElement {
@@ -95,7 +98,15 @@ class FixtureDocument {
       "reencounter-status",
       "reencounter-list",
       "reencounter-empty-state",
-      "reencounter-retry-button"
+      "reencounter-retry-button",
+      "settings-status",
+      "pause-collection-button",
+      "resume-collection-button",
+      "data-delete-all-status",
+      "data-delete-all-button",
+      "data-delete-all-confirmation",
+      "data-delete-all-confirm-button",
+      "data-delete-all-cancel-button"
     ]) {
       this.elements.set(id, new FixtureElement());
     }
@@ -396,6 +407,171 @@ test("keeps a Missed Path card when deletion fails and permits retry", () => {
   );
   deleteButton.click();
   assert.equal(attempt, 2);
+});
+
+test("waits for SETTINGS_UPDATE acknowledgement for pause and resume", () => {
+  const pending = [];
+  const harness = createHarness(({ message, callback }) => {
+    if (isSettingsUpdateMessage(message)) {
+      pending.push({ message, callback });
+    }
+  });
+  const pauseButton = harness.document.getElementById(
+    "pause-collection-button"
+  );
+  const resumeButton = harness.document.getElementById(
+    "resume-collection-button"
+  );
+  const status = harness.document.getElementById("settings-status");
+
+  pauseButton.click();
+  assert.equal(pending[0].message.payload.enabled, false);
+  assert.equal(pauseButton.disabled, true);
+  assert.equal(resumeButton.disabled, true);
+  assert.equal(status.textContent, "正在暂停采集…");
+  pending[0].callback(
+    createSuccessResponseMessage(pending[0].message.requestId, {
+      settings: { ...DEFAULT_SETTINGS_V1, enabled: false },
+      updated: true
+    })
+  );
+  assert.equal(status.textContent, "采集已暂停，已有数据仍可查看和删除。");
+  assert.equal(pauseButton.disabled, false);
+
+  resumeButton.click();
+  assert.equal(pending[1].message.payload.enabled, true);
+  pending[1].callback(
+    createSuccessResponseMessage(pending[1].message.requestId, {
+      settings: DEFAULT_SETTINGS_V1,
+      updated: true
+    })
+  );
+  assert.equal(status.textContent, "采集已恢复。");
+  assert.equal(resumeButton.disabled, false);
+});
+
+test("keeps Settings controls retryable after a failed update", () => {
+  const harness = createHarness(({ message, callback }) => {
+    if (isSettingsUpdateMessage(message)) {
+      callback(
+        createErrorResponseMessage(message.requestId, {
+          code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+          message: "Unable to save Settings.",
+          retryable: true
+        })
+      );
+    }
+  });
+  const pauseButton = harness.document.getElementById(
+    "pause-collection-button"
+  );
+  pauseButton.click();
+  assert.equal(pauseButton.disabled, false);
+  assert.equal(
+    harness.document.getElementById("settings-status").textContent,
+    "设置保存失败，请重试。"
+  );
+});
+
+test("requires explicit second confirmation and cancellation sends nothing", () => {
+  const harness = createHarness(() => {});
+  const clearButton = harness.document.getElementById("data-delete-all-button");
+  const confirmation = harness.document.getElementById(
+    "data-delete-all-confirmation"
+  );
+
+  clearButton.click();
+  assert.equal(confirmation.hidden, false);
+  assert.equal(clearButton.disabled, true);
+  assert.equal(harness.sentMessages.length, 0);
+  harness.document.getElementById("data-delete-all-cancel-button").click();
+  assert.equal(confirmation.hidden, true);
+  assert.equal(clearButton.disabled, false);
+  assert.equal(harness.sentMessages.length, 0);
+  assert.equal(
+    harness.document.getElementById("data-delete-all-status").textContent,
+    "已取消清空，现有数据未改变。"
+  );
+});
+
+test("keeps data visible until DATA_DELETE_ALL succeeds then requeries empty state", () => {
+  let pendingClear = null;
+  const harness = createHarness(({ message, callback }) => {
+    if (isMissedPathsQueryMessage(message)) {
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          missedPaths: pendingClear === null ? [createMissedPath()] : []
+        })
+      );
+    } else if (isDataDeleteAllMessage(message)) {
+      pendingClear = { message, callback };
+    } else if (isActiveContextQueryMessage(message)) {
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          status: ACTIVE_CONTEXT_STATUSES.UNAVAILABLE,
+          context: null
+        })
+      );
+    }
+  });
+  harness.app.loadMissedPaths();
+  const list = harness.document.getElementById("card-list");
+  harness.document.getElementById("data-delete-all-button").click();
+  harness.document.getElementById("data-delete-all-confirm-button").click();
+
+  assert.equal(isDataDeleteAllMessage(pendingClear.message), true);
+  assert.equal(list.children.length, 1);
+  assert.equal(
+    harness.document.getElementById("data-delete-all-status").textContent,
+    "正在清空本地数据…"
+  );
+  pendingClear.callback(
+    createSuccessResponseMessage(pendingClear.message.requestId, {
+      deleted: true
+    })
+  );
+  assert.equal(list.children.length, 0);
+  assert.equal(harness.document.getElementById("empty-state").hidden, false);
+  assert.equal(
+    harness.document.getElementById("data-delete-all-status").textContent,
+    "本地业务数据已清空，采集设置已保留。"
+  );
+});
+
+test("does not clear the UI when DATA_DELETE_ALL fails", () => {
+  const harness = createHarness(({ message, callback }) => {
+    if (isMissedPathsQueryMessage(message)) {
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          missedPaths: [createMissedPath()]
+        })
+      );
+    } else if (isDataDeleteAllMessage(message)) {
+      callback(
+        createErrorResponseMessage(message.requestId, {
+          code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+          message: "Unable to clear data.",
+          retryable: true
+        })
+      );
+    }
+  });
+  harness.app.loadMissedPaths();
+  harness.document.getElementById("data-delete-all-button").click();
+  harness.document.getElementById("data-delete-all-confirm-button").click();
+
+  assert.equal(
+    harness.document.getElementById("card-list").children.length,
+    1
+  );
+  assert.equal(
+    harness.document.getElementById("data-delete-all-confirmation").hidden,
+    false
+  );
+  assert.equal(
+    harness.document.getElementById("data-delete-all-status").textContent,
+    "清空失败，现有数据显示未改变。"
+  );
 });
 
 test("renders an empty state for an empty Repository", () => {

@@ -41,3 +41,18 @@ test("Demo app imports the module Runtime and keeps the page script modular", ()
     /<script\s+type="module"\s+src="\.\/app\.js"><\/script>/u
   );
 });
+
+test("Demo adds the low-signal dynamic Candidate after the simulated window", () => {
+  const advanceFunction = appSource.slice(
+    appSource.indexOf("async function advanceScenario()"),
+    appSource.indexOf("async function finalizeSession()")
+  );
+  const advanceIndex = advanceFunction.indexOf(
+    'await demoRuntime.advanceScenario("demo-candidate-002")'
+  );
+  const appendIndex = advanceFunction.indexOf("appendDynamicCandidate()");
+
+  assert.notEqual(advanceIndex, -1);
+  assert.notEqual(appendIndex, -1);
+  assert.ok(advanceIndex < appendIndex);
+});

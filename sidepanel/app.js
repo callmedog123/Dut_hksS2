@@ -4,6 +4,7 @@ import {
   ACTIVE_CONTEXT_STATUSES,
   REENCOUNTER_FEEDBACK_OUTCOMES,
   createActiveContextQueryMessage,
+  createDataDeleteAllMessage,
   createMissedPathDeleteMessage,
   createMissedPathsQueryMessage,
   createReencounterQueryMessage,
@@ -11,6 +12,7 @@ import {
   createReencounterShownMessage,
   createSettingsUpdateMessage,
   isActiveContextQueryResponse,
+  isDataDeleteAllResponse,
   isMissedPathDeleteResponse,
   isMissedPathsQueryResponse,
   isReencounterQueryResponse,
@@ -218,6 +220,27 @@ export function createSidePanelApp({
     documentRef,
     "resume-collection-button"
   );
+  const dataDeleteAllStatusElement = requireElement(
+    documentRef,
+    "data-delete-all-status"
+  );
+  const dataDeleteAllButton = requireElement(
+    documentRef,
+    "data-delete-all-button"
+  );
+  const dataDeleteAllConfirmation = requireElement(
+    documentRef,
+    "data-delete-all-confirmation"
+  );
+  const dataDeleteAllConfirmButton = requireElement(
+    documentRef,
+    "data-delete-all-confirm-button"
+  );
+  const dataDeleteAllCancelButton = requireElement(
+    documentRef,
+    "data-delete-all-cancel-button"
+  );
+  dataDeleteAllConfirmation.hidden = true;
   let activeMissedPathsRequestId = null;
   let contextLoadGeneration = 0;
   let currentMissedPathViewModels = [];
@@ -675,6 +698,66 @@ export function createSidePanelApp({
     return request;
   }
 
+  function armDataDeleteAll() {
+    dataDeleteAllButton.disabled = true;
+    dataDeleteAllConfirmation.hidden = false;
+    dataDeleteAllStatusElement.setAttribute("data-state", "confirming");
+    dataDeleteAllStatusElement.textContent = "请再次确认；此操作不可撤销。";
+  }
+
+  function cancelDataDeleteAll() {
+    dataDeleteAllButton.disabled = false;
+    dataDeleteAllConfirmButton.disabled = false;
+    dataDeleteAllCancelButton.disabled = false;
+    dataDeleteAllConfirmation.hidden = true;
+    dataDeleteAllStatusElement.setAttribute("data-state", "idle");
+    dataDeleteAllStatusElement.textContent = "已取消清空，现有数据未改变。";
+  }
+
+  function submitDataDeleteAll() {
+    dataDeleteAllConfirmButton.disabled = true;
+    dataDeleteAllCancelButton.disabled = true;
+    dataDeleteAllStatusElement.setAttribute("data-state", "pending");
+    dataDeleteAllStatusElement.textContent = "正在清空本地数据…";
+    let request;
+    try {
+      request = createDataDeleteAllMessage(now());
+      runtime.sendMessage(request, (response) => {
+        const runtimeError = runtime.lastError;
+        if (
+          runtimeError ||
+          !isDataDeleteAllResponse(response) ||
+          response.requestId !== request.requestId ||
+          response.ok === false
+        ) {
+          dataDeleteAllConfirmButton.disabled = false;
+          dataDeleteAllCancelButton.disabled = false;
+          dataDeleteAllStatusElement.setAttribute("data-state", "error");
+          dataDeleteAllStatusElement.textContent = "清空失败，现有数据显示未改变。";
+          return;
+        }
+
+        dataDeleteAllButton.disabled = false;
+        dataDeleteAllConfirmButton.disabled = false;
+        dataDeleteAllCancelButton.disabled = false;
+        dataDeleteAllConfirmation.hidden = true;
+        dataDeleteAllStatusElement.setAttribute("data-state", "success");
+        dataDeleteAllStatusElement.textContent = response.data.deleted
+          ? "本地业务数据已清空，采集设置已保留。"
+          : "本地业务数据已经为空。";
+        loadMissedPaths();
+        loadContextualReencounters();
+      });
+    } catch {
+      dataDeleteAllConfirmButton.disabled = false;
+      dataDeleteAllCancelButton.disabled = false;
+      dataDeleteAllStatusElement.setAttribute("data-state", "error");
+      dataDeleteAllStatusElement.textContent = "清空失败，现有数据显示未改变。";
+      return null;
+    }
+    return request;
+  }
+
   function submitReencounterFeedback(
     controller,
     outcome,
@@ -969,6 +1052,9 @@ export function createSidePanelApp({
   resumeCollectionButton.addEventListener("click", () => {
     submitSettingsUpdate(true);
   });
+  dataDeleteAllButton.addEventListener("click", armDataDeleteAll);
+  dataDeleteAllCancelButton.addEventListener("click", cancelDataDeleteAll);
+  dataDeleteAllConfirmButton.addEventListener("click", submitDataDeleteAll);
 
   return Object.freeze({
     load() {

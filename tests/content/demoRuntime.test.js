@@ -131,11 +131,6 @@ test("runs the local Demo through discovery, signals, finalization and restart-s
   harness.intersection.setVisible(highElement, false);
   harness.intersection.setVisible(highElement, true);
 
-  harness.fixture.addCandidate({
-    id: "demo-candidate-003",
-    title: "Dynamic low-signal result",
-    href: "https://knowledge.example/result?id=3"
-  });
   const advanced = await harness.runtime.advanceScenario(
     "demo-candidate-002"
   );
@@ -149,6 +144,16 @@ test("runs the local Demo through discovery, signals, finalization and restart-s
     returnCount: 2,
     clicked: false
   });
+
+  const lowSignalElement = harness.fixture.addCandidate({
+    id: "demo-candidate-003",
+    title: "Dynamic low-signal result",
+    href: "https://knowledge.example/result?id=3"
+  });
+  harness.intersection.setVisible(lowSignalElement, false);
+  harness.intersection.setVisible(lowSignalElement, true);
+  harness.intersection.setVisible(lowSignalElement, false);
+  harness.intersection.setVisible(lowSignalElement, true);
 
   const finalization = await harness.runtime.finalizeSession();
   assert.equal(finalization.alreadyFinalized, false);
@@ -171,8 +176,9 @@ test("runs the local Demo through discovery, signals, finalization and restart-s
   assert.equal(session.candidates.length, 3);
   assert.equal(session.candidates[0].signals.clicked, true);
   assert.deepEqual(session.candidates[1].signals, advanced.signals);
-  assert.equal(session.candidates[2].signals.visibleMs, 12_000);
+  assert.equal(session.candidates[2].signals.visibleMs, 0);
   assert.equal(session.candidates[2].signals.hoverMs, 0);
+  assert.equal(session.candidates[2].signals.returnCount, 2);
 
   const repeated = await harness.runtime.finalizeSession();
   assert.equal(repeated.alreadyFinalized, true);
@@ -301,3 +307,43 @@ test("cleanup is idempotent and prevents later dynamic collection", async () => 
   assert.equal(harness.intersection.instances[0].disconnectCount, 1);
 });
 
+test("enters a paused state without writes and can restart after resume", async () => {
+  let enabled = false;
+  const messages = [];
+  const statuses = [];
+  const harness = createRuntimeHarness({
+    statuses,
+    async sendMessage(message) {
+      messages.push(message);
+      if (!enabled) {
+        return createErrorResponseMessage(message.requestId, {
+          code: RESPONSE_ERROR_CODES.COLLECTION_PAUSED,
+          message: "Collection is paused.",
+          retryable: false
+        });
+      }
+      return createSuccessResponseMessage(message.requestId, {
+        sessionId: message.payload.sessionId,
+        acceptedCandidateIds: message.payload.candidates.map(
+          (candidate) => candidate.id
+        ),
+        totalCandidateCount: message.payload.candidates.length,
+        updatedAt: message.payload.discoveredAt
+      });
+    }
+  });
+
+  await assert.rejects(
+    () => harness.runtime.start(),
+    /Collection is paused/u
+  );
+  assert.equal(harness.runtime.lifecycle, "paused");
+  assert.equal(messages.length, 1);
+  assert.equal(statuses.at(-1).state, "paused");
+
+  enabled = true;
+  await harness.runtime.start();
+  assert.equal(harness.runtime.lifecycle, "collecting");
+  assert.equal(messages.length, 2);
+  harness.runtime.cleanup();
+});

@@ -26,6 +26,7 @@ export const MESSAGE_TYPES = Object.freeze({
   ACTIVE_CONTEXT_QUERY: "ACTIVE_CONTEXT_QUERY",
   CANDIDATE_CHOSEN: "CANDIDATE_CHOSEN",
   CANDIDATES_DISCOVERED: "CANDIDATES_DISCOVERED",
+  DATA_DELETE_ALL: "DATA_DELETE_ALL",
   MISSED_PATH_DELETE: "MISSED_PATH_DELETE",
   MISSED_PATHS_QUERY: "MISSED_PATHS_QUERY",
   PING: "PING",
@@ -47,6 +48,7 @@ export const RESPONSE_ERROR_CODES = Object.freeze({
   CANDIDATE_DISCOVERY_CONFLICT: "CANDIDATE_DISCOVERY_CONFLICT",
   CANDIDATE_DISCOVERY_FAILED: "CANDIDATE_DISCOVERY_FAILED",
   COLLECTION_PAUSED: "COLLECTION_PAUSED",
+  DATA_DELETE_ALL_FAILED: "DATA_DELETE_ALL_FAILED",
   INVALID_REQUEST: "INVALID_REQUEST",
   MISSED_PATH_DELETE_FAILED: "MISSED_PATH_DELETE_FAILED",
   REENCOUNTER_QUERY_FAILED: "REENCOUNTER_QUERY_FAILED",
@@ -172,6 +174,14 @@ export const RESPONSE_ERROR_CODES = Object.freeze({
  */
 
 /**
+ * @typedef {object} DataDeleteAllMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.DATA_DELETE_ALL} type
+ * @property {string} requestId
+ * @property {{requestedAt: number}} payload
+ */
+
+/**
  * @typedef {object} ReencounterQueryMessageV1
  * @property {typeof SCHEMA_VERSION} schemaVersion
  * @property {typeof MESSAGE_TYPES.RE_ENCOUNTER_QUERY} type
@@ -259,6 +269,8 @@ const MISSED_PATH_DELETE_RESPONSE_KEYS = Object.freeze([
   "missedPathId",
   "deleted"
 ]);
+const DATA_DELETE_ALL_PAYLOAD_KEYS = Object.freeze(["requestedAt"]);
+const DATA_DELETE_ALL_RESPONSE_KEYS = Object.freeze(["deleted"]);
 const REENCOUNTER_QUERY_PAYLOAD_KEYS = Object.freeze([
   "context",
   "limit"
@@ -806,6 +818,41 @@ export function isMissedPathDeleteMessage(message) {
 }
 
 /**
+ * @param {number} [requestedAt]
+ * @param {string} [requestId]
+ * @returns {DataDeleteAllMessageV1}
+ */
+export function createDataDeleteAllMessage(
+  requestedAt = Date.now(),
+  requestId = createRequestId()
+) {
+  requireRequestId(requestId, "DATA_DELETE_ALL");
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.DATA_DELETE_ALL,
+    requestId,
+    payload: { requestedAt }
+  };
+  if (!isDataDeleteAllMessage(message)) {
+    throw new TypeError("Failed to create a valid DATA_DELETE_ALL message.");
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is DataDeleteAllMessageV1}
+ */
+export function isDataDeleteAllMessage(message) {
+  return Boolean(
+    hasValidEnvelope(message, MESSAGE_TYPES.DATA_DELETE_ALL) &&
+      hasExactKeys(message.payload, DATA_DELETE_ALL_PAYLOAD_KEYS) &&
+      isFiniteNumber(message.payload.requestedAt) &&
+      message.payload.requestedAt >= 0
+  );
+}
+
+/**
  * @param {import("./types.js").SearchContextV1} context
  * @param {number} limit
  * @param {string} [requestId]
@@ -1176,6 +1223,23 @@ export function isMissedPathDeleteResponse(message) {
   return Boolean(
     hasExactKeys(message.data, MISSED_PATH_DELETE_RESPONSE_KEYS) &&
       isNonEmptyString(message.data.missedPathId) &&
+      typeof message.data.deleted === "boolean"
+  );
+}
+
+/**
+ * @param {unknown} message
+ * @returns {boolean}
+ */
+export function isDataDeleteAllResponse(message) {
+  if (!isResponseMessage(message)) {
+    return false;
+  }
+  if (message.ok === false) {
+    return true;
+  }
+  return Boolean(
+    hasExactKeys(message.data, DATA_DELETE_ALL_RESPONSE_KEYS) &&
       typeof message.data.deleted === "boolean"
   );
 }

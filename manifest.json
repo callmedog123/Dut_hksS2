@@ -10,6 +10,35 @@
   "host_permissions": [
     "https://search.bilibili.com/*"
   ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://search.bilibili.com/*"
+      ],
+      "js": [
+        "content/contentScript.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content/bilibiliRuntime.js",
+        "content/adapters/bilibiliSearchAdapter.js",
+        "content/candidateBinding.js",
+        "content/eventCollector/click.js",
+        "content/eventCollector/hover.js",
+        "content/visibility.js",
+        "shared/messages.js",
+        "shared/types.js",
+        "shared/url.js"
+      ],
+      "matches": [
+        "https://search.bilibili.com/*"
+      ]
+    }
+  ],
   "background": {
     "service_worker": "background/serviceWorker.js",
     "type": "module"

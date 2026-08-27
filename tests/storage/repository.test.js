@@ -131,6 +131,20 @@ test("returns strict enabled defaults when Settings have not been persisted", as
   assert.deepEqual(await repository.getSettings(), DEFAULT_SETTINGS_V1);
 });
 
+test("Settings update storage failure preserves the previous complete value", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  const initial = createSettings({ enabled: true });
+  await repository.saveSettings(initial);
+  const failure = new Error("settings commit failed");
+  adapter.failNextCommit(failure);
+  await assert.rejects(
+    () => repository.saveSettings({ ...initial, enabled: false }),
+    (error) => error === failure
+  );
+  assert.deepEqual(await repository.getSettings(), initial);
+});
+
 test("initializes schemaVersion and provides CRUD for every minimal record", async () => {
   const adapter = createTransactionalMemoryStorageAdapter();
   const repository = createRepository(adapter);
@@ -1087,7 +1101,7 @@ test("deleting a MissedPath atomically removes linked Reencounters", async () =>
   assert.equal(await repository.deleteMissedPath("missed-1"), false);
 });
 
-test("deleteAll clears domain data but keeps the compatible schemaVersion", async () => {
+test("deleteAll clears domain data but preserves schemaVersion and Settings", async () => {
   const repository = createRepository(
     createTransactionalMemoryStorageAdapter()
   );
@@ -1095,9 +1109,10 @@ test("deleteAll clears domain data but keeps the compatible schemaVersion", asyn
   await repository.saveChosen(createChosen());
   await repository.saveMissedPath(createMissedPath());
   await repository.saveReencounter(createReencounter());
-  await repository.saveSettings(createSettings());
+  const settings = createSettings({ enabled: false });
+  await repository.saveSettings(settings);
 
-  await repository.deleteAll();
+  assert.equal(await repository.deleteAll(), true);
 
   assert.equal(await repository.getSchemaVersion(), SCHEMA_VERSION);
   assert.deepEqual(await repository.listSessions(), []);
@@ -1105,7 +1120,31 @@ test("deleteAll clears domain data but keeps the compatible schemaVersion", asyn
   assert.deepEqual(await repository.listMissedPaths(), []);
   assert.deepEqual(await repository.listReencounters(), []);
   assert.equal(await repository.getActiveContext(), null);
-  assert.deepEqual(await repository.getSettings(), DEFAULT_SETTINGS_V1);
+  assert.deepEqual(await repository.getSettings(), settings);
+  assert.equal(await repository.deleteAll(), false);
+});
+
+test("deleteAll storage failure preserves every domain record and Settings", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  const settings = createSettings({ enabled: false });
+  await repository.mergeDiscoveredCandidates(createDiscovery());
+  await repository.saveChosen(createChosen());
+  await repository.saveMissedPath(createMissedPath());
+  await repository.saveReencounter(createReencounter());
+  await repository.saveSettings(settings);
+  const failure = new Error("clear commit failed");
+  adapter.failNextCommit(failure);
+
+  await assert.rejects(
+    () => repository.deleteAll(),
+    (error) => error === failure
+  );
+  assert.equal((await repository.listSessions()).length, 1);
+  assert.equal((await repository.listChosen()).length, 1);
+  assert.equal((await repository.listMissedPaths()).length, 1);
+  assert.equal((await repository.listReencounters()).length, 1);
+  assert.deepEqual(await repository.getSettings(), settings);
 });
 
 test("rejects incompatible schemaVersion without writing", async () => {

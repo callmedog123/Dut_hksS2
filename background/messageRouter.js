@@ -10,6 +10,8 @@ import {
   isActiveContextQueryResponse,
   isCandidatesDiscoveredMessage,
   isCandidatesDiscoveredResponse,
+  isDataDeleteAllMessage,
+  isDataDeleteAllResponse,
   isMissedPathDeleteMessage,
   isMissedPathDeleteResponse,
   isMissedPathsQueryMessage,
@@ -34,6 +36,10 @@ import {
   CandidateDiscoveryError,
   createCandidateDiscoveryUseCase
 } from "./candidateDiscovery.js";
+import {
+  DataDeleteAllError,
+  createDataDeleteAllUseCase
+} from "./dataDeleteAll.js";
 import {
   MissedPathDeleteError,
   createMissedPathDeleteUseCase
@@ -92,6 +98,7 @@ function createRequestError(requestId, code, message, retryable) {
  * @param {{
  *   listMissedPaths: () => Promise<unknown[]>,
  *   deleteMissedPath?: (id: string) => Promise<boolean>,
+ *   deleteAll?: () => Promise<boolean>,
  *   getActiveContext?: () => Promise<unknown>,
  *   getSettings?: () => Promise<unknown>,
  *   listReencounters?: () => Promise<unknown[]>,
@@ -104,6 +111,7 @@ function createRequestError(requestId, code, message, retryable) {
  * @param {{
  *   activeContextQueryUseCase?: {execute: () => Promise<unknown>},
  *   candidateDiscoveryUseCase?: {execute: (payload: object) => Promise<unknown>},
+ *   dataDeleteAllUseCase?: {execute: (payload: object) => Promise<unknown>},
  *   missedPathDeleteUseCase?: {execute: (payload: object) => Promise<unknown>},
  *   reencounterQueryUseCase?: {execute: (payload: object) => Promise<unknown[]>},
  *   reencounterFeedbackUseCase?: {execute: (payload: object) => Promise<unknown>},
@@ -121,6 +129,10 @@ export function createMessageRouter(repository, options = {}) {
   const activeContextQueryUseCase = options.activeContextQueryUseCase ??
     (typeof repository.getActiveContext === "function"
       ? createActiveContextQueryUseCase(repository)
+      : null);
+  const dataDeleteAllUseCase = options.dataDeleteAllUseCase ??
+    (typeof repository.deleteAll === "function"
+      ? createDataDeleteAllUseCase(repository)
       : null);
   const missedPathDeleteUseCase = options.missedPathDeleteUseCase ??
     (typeof repository.deleteMissedPath === "function"
@@ -159,6 +171,15 @@ export function createMessageRouter(repository, options = {}) {
   ) {
     throw new TypeError(
       "Message Router Active Context query use case must implement execute()."
+    );
+  }
+  if (
+    dataDeleteAllUseCase !== null &&
+    (!isRecord(dataDeleteAllUseCase) ||
+      typeof dataDeleteAllUseCase.execute !== "function")
+  ) {
+    throw new TypeError(
+      "Message Router data delete all use case must implement execute()."
     );
   }
   if (
@@ -245,6 +266,8 @@ export function createMessageRouter(repository, options = {}) {
       }
       const isActiveContextQuery =
         message.type === MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY;
+      const isDataDeleteAll =
+        message.type === MESSAGE_TYPES.DATA_DELETE_ALL;
       const isMissedPathsQuery =
         message.type === MESSAGE_TYPES.MISSED_PATHS_QUERY;
       const isMissedPathDelete =
@@ -265,6 +288,7 @@ export function createMessageRouter(repository, options = {}) {
         message.type === MESSAGE_TYPES.SETTINGS_UPDATE;
       if (
         !isActiveContextQuery &&
+        !isDataDeleteAll &&
         !isMissedPathDelete &&
         !isMissedPathsQuery &&
         !isReencounterQuery &&
@@ -290,23 +314,25 @@ export function createMessageRouter(repository, options = {}) {
       }
       const isValidRequest = isActiveContextQuery
         ? isActiveContextQueryMessage(message)
-        : isMissedPathDelete
-          ? isMissedPathDeleteMessage(message)
-        : isMissedPathsQuery
-          ? isMissedPathsQueryMessage(message)
-          : isReencounterQuery
-          ? isReencounterQueryMessage(message)
-          : isReencounterFeedback
-            ? isReencounterFeedbackMessage(message)
-          : isReencounterShown
-            ? isReencounterShownMessage(message)
-          : isCandidatesDiscovered
-            ? isCandidatesDiscoveredMessage(message)
-            : isSignalsUpdated
-              ? isSignalsUpdatedMessage(message)
-              : isSessionFinalize
-                ? isSessionFinalizeMessage(message)
-                : isSettingsUpdateMessage(message);
+        : isDataDeleteAll
+          ? isDataDeleteAllMessage(message)
+          : isMissedPathDelete
+            ? isMissedPathDeleteMessage(message)
+            : isMissedPathsQuery
+              ? isMissedPathsQueryMessage(message)
+              : isReencounterQuery
+                ? isReencounterQueryMessage(message)
+                : isReencounterFeedback
+                  ? isReencounterFeedbackMessage(message)
+                  : isReencounterShown
+                    ? isReencounterShownMessage(message)
+                    : isCandidatesDiscovered
+                      ? isCandidatesDiscoveredMessage(message)
+                      : isSignalsUpdated
+                        ? isSignalsUpdatedMessage(message)
+                        : isSessionFinalize
+                          ? isSessionFinalizeMessage(message)
+                          : isSettingsUpdateMessage(message);
       if (!isValidRequest) {
         return createRequestError(
           message.requestId,
@@ -351,6 +377,47 @@ export function createMessageRouter(repository, options = {}) {
             RESPONSE_ERROR_CODES.STORAGE_ERROR,
             "Unable to query the current SearchContext.",
             true
+          );
+        }
+      }
+
+      if (isDataDeleteAll) {
+        if (dataDeleteAllUseCase === null) {
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.DATA_DELETE_ALL_FAILED,
+            "Data delete all use case is unavailable.",
+            false
+          );
+        }
+        try {
+          const result = await dataDeleteAllUseCase.execute(message.payload);
+          const response = createSuccessResponseMessage(
+            message.requestId,
+            result
+          );
+          if (!isDataDeleteAllResponse(response)) {
+            throw new DataDeleteAllError(
+              RESPONSE_ERROR_CODES.DATA_DELETE_ALL_FAILED,
+              "Data delete all returned invalid data.",
+              false
+            );
+          }
+          return response;
+        } catch (error) {
+          if (error instanceof DataDeleteAllError) {
+            return createRequestError(
+              message.requestId,
+              error.code,
+              error.message,
+              error.retryable
+            );
+          }
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.DATA_DELETE_ALL_FAILED,
+            "Unable to execute data delete all.",
+            false
           );
         }
       }

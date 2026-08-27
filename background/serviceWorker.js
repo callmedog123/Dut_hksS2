@@ -57,6 +57,9 @@ const messageRouter = createMessageRouter({
   deleteMissedPath(id) {
     return getRepository().deleteMissedPath(id);
   },
+  deleteAll() {
+    return getRepository().deleteAll();
+  },
   listReencounters() {
     return getRepository().listReencounters();
   },
@@ -142,6 +145,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (
     message?.type !== MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY &&
     message?.type !== MESSAGE_TYPES.CANDIDATES_DISCOVERED &&
+    message?.type !== MESSAGE_TYPES.DATA_DELETE_ALL &&
     message?.type !== MESSAGE_TYPES.MISSED_PATH_DELETE &&
     message?.type !== MESSAGE_TYPES.MISSED_PATHS_QUERY &&
     message?.type !== MESSAGE_TYPES.RE_ENCOUNTER_FEEDBACK &&

@@ -1,0 +1,23 @@
+# Local environment and dependency state
+.env
+.env.*
+!.env.example
+node_modules/
+
+# Test and coverage output
+coverage/
+.nyc_output/
+
+# Local release/debug artifacts (create only after explicit release approval)
+*.zip
+*.crx
+*.log
+*.har
+*.trace
+*.heapsnapshot
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+

@@ -1218,15 +1218,41 @@ export function createRepository(adapter) {
 
     async deleteAll() {
       await ensureCompatibleVersion();
+      const entries = await adapter.entries();
+      const settingsKey = recordKey(
+        REPOSITORY_KINDS.SETTINGS,
+        SETTINGS_ID
+      );
+      const storedSettings = await adapter.get(settingsKey);
+      if (storedSettings !== undefined) {
+        const settings = validateStoredRecord(
+          storedSettings,
+          REPOSITORY_KINDS.SETTINGS,
+          SETTINGS_ID
+        );
+        if (!isSettingsV1(settings)) {
+          throw new RepositoryDataError("Stored settings data is invalid.");
+        }
+      }
+      const hasDomainData = entries.some(
+        ({ key }) => key !== REPOSITORY_SCHEMA_KEY && key !== settingsKey
+      );
+      if (!hasDomainData) {
+        return false;
+      }
       await adapter.commit({
         clear: true,
         puts: [
           {
             key: REPOSITORY_SCHEMA_KEY,
             value: { schemaVersion: SCHEMA_VERSION }
-          }
+          },
+          ...(storedSettings === undefined
+            ? []
+            : [{ key: settingsKey, value: storedSettings }])
         ]
       });
+      return true;
     }
   });
 }

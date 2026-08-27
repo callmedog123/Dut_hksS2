@@ -6,6 +6,7 @@ class FixtureElement {
     this.textContent = text;
     this.children = [];
     this.parentNode = null;
+    this.listeners = new Map();
   }
 
   getAttribute(name) {
@@ -29,6 +30,28 @@ class FixtureElement {
     for (const child of children) {
       this.appendChild(child);
     }
+  }
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type, listener) {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatchEvent(event) {
+    event.target ??= this;
+    for (const listener of this.listeners.get(event.type) ?? []) {
+      listener(event);
+    }
+    return event.defaultPrevented !== true;
+  }
+
+  listenerCount(type) {
+    return this.listeners.get(type)?.size ?? 0;
   }
 
   querySelector(selector) {
@@ -76,6 +99,7 @@ class FixtureDocument {
     this.documentElement = documentElement;
     this.documentElement.parentNode = this;
     this.location = { href };
+    this.hidden = false;
     this.listeners = new Map();
   }
 
@@ -99,6 +123,18 @@ class FixtureDocument {
 
   removeEventListener(type, listener) {
     this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatchEvent(event) {
+    event.target ??= this;
+    for (const listener of this.listeners.get(event.type) ?? []) {
+      listener(event);
+    }
+    return event.defaultPrevented !== true;
+  }
+
+  listenerCount(type) {
+    return this.listeners.get(type)?.size ?? 0;
   }
 
   dispatch(type, target, init = {}) {

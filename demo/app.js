@@ -82,8 +82,12 @@ async function advanceScenario() {
   advanceButton.disabled = true;
   advanceButton.setAttribute("data-state", "working");
   try {
-    appendDynamicCandidate();
     const result = await demoRuntime.advanceScenario("demo-candidate-002");
+    // Keep the late-arriving result outside the simulated 12-second window.
+    // Otherwise real IntersectionObserver viewport churn can combine its
+    // exposure and return signals and incorrectly push this low-signal fixture
+    // over the consideration threshold.
+    appendDynamicCandidate();
     advanceButton.setAttribute("data-state", "success");
     advanceButton.textContent = "场景已推进";
     runtimeResponseElement.textContent = JSON.stringify(result, null, 2);

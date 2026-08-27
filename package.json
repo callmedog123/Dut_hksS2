@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "node --check shared/messages.js && node --check background/serviceWorker.js && node --check sidepanel/app.js && node --check demo/app.js",
-    "test": "node --test tests/messages.test.js",
-    "build": "node scripts/validate-build.js"
+    "typecheck": "node scripts/check-syntax.js",
+    "test": "node --test",
+    "test:messages": "node --test tests/messages.test.js",
+    "build": "node scripts/validate-build.js && node scripts/validate-release.js"
   }
 }
