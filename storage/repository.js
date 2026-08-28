@@ -5,16 +5,13 @@ import {
   SCHEMA_VERSION,
   SESSION_LIFECYCLE_STATUSES,
   isCandidateSignalsV1,
-  isCandidateTagProfileV1,
   isCandidateV1,
-  isContextTagProfileV1,
   isMissedPathV1,
   isReencounterFeedbackV1,
   isReencounterRecordV1,
   isSearchContextV1,
   isSessionLifecycleStatusV2,
   isSessionOwnerV1,
-  isSessionSelectedTagProfileV1,
   isSettingsV1
 } from "../shared/types.js";
 import { normalizeCandidateUrl } from "../shared/url.js";
@@ -30,10 +27,7 @@ export const REPOSITORY_KINDS = Object.freeze({
   REENCOUNTER: "reencounter",
   SESSION: "session",
   SESSION_FINALIZATION: "session-finalization",
-  SETTINGS: "settings",
-  TAG_CANDIDATE: "tag-candidate",
-  TAG_CONTEXT: "tag-context",
-  TAG_SELECTED: "tag-selected"
+  SETTINGS: "settings"
 });
 
 const ACTIVE_CONTEXT_ID = "current";
@@ -302,23 +296,6 @@ function activeContextRecordId(owner) {
     `document-${encodeURIComponent(owner.documentId)}`,
     `frame-${owner.frameId}`
   ].join(":");
-}
-
-function tagCandidateRecordId(sessionId, candidateId, owner) {
-  if (!isNonEmptyString(candidateId)) {
-    throw new RepositoryDataError(
-      "Tag profile candidateId must be a non-empty string."
-    );
-  }
-  return `${sessionRecordId(sessionId, owner)}:${encodeURIComponent(candidateId)}`;
-}
-
-function tagRecordPrefixes(ownedSessionId) {
-  return Object.freeze({
-    context: recordKey(REPOSITORY_KINDS.TAG_CONTEXT, ownedSessionId),
-    selected: recordKey(REPOSITORY_KINDS.TAG_SELECTED, ownedSessionId),
-    candidate: `${recordKey(REPOSITORY_KINDS.TAG_CANDIDATE, ownedSessionId)}:`
-  });
 }
 
 function assertAdapter(adapter) {
@@ -626,51 +603,6 @@ export function createRepository(adapter) {
     return records
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((record) => record.data);
-  }
-
-  async function listRecordsWithKeyPrefix(kind, keyPrefix, validator) {
-    await ensureCompatibleVersion();
-    const records = [];
-    for (const entry of await adapter.entries()) {
-      if (!isRecord(entry) || !isNonEmptyString(entry.key)) {
-        throw new RepositoryDataError(
-          "Storage adapter returned an invalid entry."
-        );
-      }
-      if (!entry.key.startsWith(keyPrefix)) {
-        continue;
-      }
-
-      const id = entry.key.slice(`${kind}:`.length);
-      const data = validateStoredRecord(entry.value, kind, id);
-      if (!validator(data)) {
-        throw new RepositoryDataError(`Stored ${kind} data is invalid.`);
-      }
-      records.push({ id, data: cloneJson(data) });
-    }
-    return records
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .map((record) => record.data);
-  }
-
-  async function collectSessionTagKeys(ownedSessionId) {
-    const prefixes = tagRecordPrefixes(ownedSessionId);
-    const keys = [];
-    for (const entry of await adapter.entries()) {
-      if (!isRecord(entry) || !isNonEmptyString(entry.key)) {
-        throw new RepositoryDataError(
-          "Storage adapter returned an invalid entry."
-        );
-      }
-      if (
-        entry.key === prefixes.context ||
-        entry.key === prefixes.selected ||
-        entry.key.startsWith(prefixes.candidate)
-      ) {
-        keys.push(entry.key);
-      }
-    }
-    return keys;
   }
 
   async function findOwnedActiveContextForTab(tabId) {
@@ -1610,11 +1542,9 @@ export function createRepository(adapter) {
         ownedActiveContextId,
         isActiveContextState
       );
-      const tagKeys = await collectSessionTagKeys(ownedSessionId);
       await adapter.commit({
         deletes: [
           recordKey(REPOSITORY_KINDS.SESSION, ownedSessionId),
-          ...tagKeys,
           ...(activeContext?.sessionId === sessionId
             ? [
                 recordKey(
@@ -1964,88 +1894,6 @@ export function createRepository(adapter) {
         ...(deletes.length > 0 ? { deletes } : {})
       });
       return { changed: true, status: abandonedSession.status };
-    },
-
-    async saveContextTagProfile(profile, owner) {
-      if (!isContextTagProfileV1(profile)) {
-        throw new RepositoryDataError("Invalid Context tag profile data.");
-      }
-      return saveRecord(
-        REPOSITORY_KINDS.TAG_CONTEXT,
-        sessionRecordId(profile.sessionId, owner),
-        profile,
-        isContextTagProfileV1
-      );
-    },
-    getContextTagProfile(sessionId, owner) {
-      return getRecord(
-        REPOSITORY_KINDS.TAG_CONTEXT,
-        sessionRecordId(sessionId, owner),
-        isContextTagProfileV1
-      );
-    },
-
-    async saveCandidateTagProfile(profile, owner) {
-      if (!isCandidateTagProfileV1(profile)) {
-        throw new RepositoryDataError("Invalid Candidate tag profile data.");
-      }
-      return saveRecord(
-        REPOSITORY_KINDS.TAG_CANDIDATE,
-        tagCandidateRecordId(profile.sessionId, profile.candidateId, owner),
-        profile,
-        isCandidateTagProfileV1
-      );
-    },
-    getCandidateTagProfile(sessionId, candidateId, owner) {
-      return getRecord(
-        REPOSITORY_KINDS.TAG_CANDIDATE,
-        tagCandidateRecordId(sessionId, candidateId, owner),
-        isCandidateTagProfileV1
-      );
-    },
-    listCandidateTagProfiles(sessionId, owner) {
-      const ownedSessionId = sessionRecordId(sessionId, owner);
-      return listRecordsWithKeyPrefix(
-        REPOSITORY_KINDS.TAG_CANDIDATE,
-        tagRecordPrefixes(ownedSessionId).candidate,
-        isCandidateTagProfileV1
-      );
-    },
-
-    async saveSessionSelectedTagProfile(profile, owner) {
-      if (!isSessionSelectedTagProfileV1(profile)) {
-        throw new RepositoryDataError("Invalid selected tag profile data.");
-      }
-      return saveRecord(
-        REPOSITORY_KINDS.TAG_SELECTED,
-        sessionRecordId(profile.sessionId, owner),
-        profile,
-        isSessionSelectedTagProfileV1
-      );
-    },
-    getSessionSelectedTagProfile(sessionId, owner) {
-      return getRecord(
-        REPOSITORY_KINDS.TAG_SELECTED,
-        sessionRecordId(sessionId, owner),
-        isSessionSelectedTagProfileV1
-      );
-    },
-
-    /**
-     * Remove every tag profile owned by one Session in a single commit. A
-     * single Missed Path deletion deliberately does not call this, because the
-     * remaining Missed Paths of the same Session still rely on the profiles.
-     */
-    async deleteSessionTagProfiles(sessionId, owner) {
-      await ensureCompatibleVersion();
-      const keys = await collectSessionTagKeys(
-        sessionRecordId(sessionId, owner)
-      );
-      if (keys.length === 0) {
-        return false;
-      }
-      await adapter.commit({ deletes: keys });
-      return true;
     },
 
     saveChosen(chosen) {

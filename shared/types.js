@@ -3,54 +3,6 @@
 /** The single version source for messages and Repository envelopes. */
 export const SCHEMA_VERSION = 2;
 
-/** The single limit source for tag DTOs and local extraction. */
-export const TAG_LIMITS = Object.freeze({
-  maxSourceCodePoints: 512,
-  maxTagCodePoints: 32,
-  maxTags: 12,
-  maxNativeTags: 12
-});
-
-/** A deliberately small, reviewable stop-word list. */
-export const TAG_STOP_WORDS = Object.freeze([
-  "a",
-  "an",
-  "and",
-  "are",
-  "as",
-  "at",
-  "be",
-  "by",
-  "for",
-  "from",
-  "in",
-  "is",
-  "it",
-  "of",
-  "on",
-  "or",
-  "the",
-  "to",
-  "with",
-  "与",
-  "为",
-  "从",
-  "到",
-  "及",
-  "和",
-  "在",
-  "是",
-  "的",
-  "了",
-  "这",
-  "那",
-  "或"
-]);
-
-const TAG_STOP_WORD_SET = new Set(TAG_STOP_WORDS);
-const TAG_CONTROL_OR_FORMAT_PATTERN = /[\p{Cc}\p{Cf}]+/gu;
-const TAG_UNSUPPORTED_CHARACTER_PATTERN = /[^\p{L}\p{N}_\-\s]+/gu;
-
 export const CONSIDERATION_REASON_CODES = Object.freeze({
   LONG_EXPOSURE: "LONG_EXPOSURE",
   LONG_HOVER: "LONG_HOVER",
@@ -151,45 +103,6 @@ export const DEFAULT_SETTINGS_V1 = Object.freeze({
  * @property {string} source
  * @property {number} timestamp
  * @property {string[]} [keywords]
- */
-
-/**
- * Local, site-independent tags extracted from one search Context.
- *
- * @typedef {object} ContextTagProfileV1
- * @property {string} sessionId
- * @property {readonly string[]} normalizedTags
- */
-
-/**
- * Candidate tags with platform labels kept separate from normalized tags.
- *
- * @typedef {object} CandidateTagProfileV1
- * @property {string} candidateId
- * @property {string} sessionId
- * @property {readonly string[]} nativeTags
- * @property {readonly string[]} normalizedTags
- */
-
-/**
- * One aggregated tag of the Candidates a user actually selected in a Session.
- * candidateCount is how many selected Candidates carried the tag, so a tag
- * shared by several selections outranks a tag seen once.
- *
- * @typedef {object} SelectedTagWeightV1
- * @property {string} tag
- * @property {number} candidateCount
- * @property {number} weight
- */
-
-/**
- * The tag profile derived from every clicked Candidate in one Session. With no
- * clicked Candidate this is explicitly empty rather than absent.
- *
- * @typedef {object} SessionSelectedTagProfileV1
- * @property {string} sessionId
- * @property {number} selectedCandidateCount
- * @property {readonly SelectedTagWeightV1[]} tags
  */
 
 /**
@@ -352,26 +265,6 @@ const SESSION_OWNER_KEYS = Object.freeze([
   "frameId",
   "sessionId"
 ]);
-const CONTEXT_TAG_PROFILE_KEYS = Object.freeze([
-  "sessionId",
-  "normalizedTags"
-]);
-const CANDIDATE_TAG_PROFILE_KEYS = Object.freeze([
-  "candidateId",
-  "sessionId",
-  "nativeTags",
-  "normalizedTags"
-]);
-const SELECTED_TAG_WEIGHT_KEYS = Object.freeze([
-  "tag",
-  "candidateCount",
-  "weight"
-]);
-const SESSION_SELECTED_TAG_PROFILE_KEYS = Object.freeze([
-  "sessionId",
-  "selectedCandidateCount",
-  "tags"
-]);
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -415,91 +308,6 @@ function isConstantValue(constants, value) {
 
 function isNonNegativeInteger(value) {
   return Number.isInteger(value) && value >= 0;
-}
-
-function sliceTagCodePoints(value) {
-  return Array.from(value).slice(0, TAG_LIMITS.maxTagCodePoints).join("");
-}
-
-function normalizeTagForValidation(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const normalized = value
-    .normalize("NFKC")
-    .replace(TAG_CONTROL_OR_FORMAT_PATTERN, " ")
-    .replace(/\s+/gu, " ")
-    .trim()
-    .replace(/^[#＃]+/u, "")
-    .toLocaleLowerCase("und")
-    .replace(TAG_UNSUPPORTED_CHARACTER_PATTERN, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-  const limited = sliceTagCodePoints(normalized).trim();
-  return limited && !TAG_STOP_WORD_SET.has(limited) ? limited : null;
-}
-
-function normalizeNativeTagForValidation(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const normalized = value
-    .normalize("NFKC")
-    .replace(TAG_CONTROL_OR_FORMAT_PATTERN, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const limited = sliceTagCodePoints(normalized).trim();
-  return normalizeTagForValidation(limited) ? limited : null;
-}
-
-function compareTagText(left, right) {
-  if (left === right) {
-    return 0;
-  }
-  return left < right ? -1 : 1;
-}
-
-function isNormalizedTagList(value) {
-  return (
-    Array.isArray(value) &&
-    value.length <= TAG_LIMITS.maxTags &&
-    value.every(
-      (tag) =>
-        typeof tag === "string" && normalizeTagForValidation(tag) === tag
-    ) &&
-    value.every((tag, index) => index === 0 || value[index - 1] < tag)
-  );
-}
-
-function isNativeTagList(value) {
-  if (
-    !Array.isArray(value) ||
-    value.length > TAG_LIMITS.maxNativeTags ||
-    !value.every(
-      (tag) =>
-        typeof tag === "string" &&
-        normalizeNativeTagForValidation(tag) === tag
-    )
-  ) {
-    return false;
-  }
-
-  const normalizedKeys = value.map(normalizeTagForValidation);
-  return normalizedKeys.every(
-    (tag, index) =>
-      tag !== null &&
-      (index === 0 ||
-        compareTagText(
-          normalizedKeys[index - 1],
-          tag
-        ) < 0)
-  );
 }
 
 /**
@@ -564,92 +372,6 @@ export function isSearchContextV1(value) {
         (Array.isArray(value.keywords) &&
           value.keywords.every(isNonEmptyString)))
   );
-}
-
-/**
- * @param {unknown} value
- * @returns {value is ContextTagProfileV1}
- */
-export function isContextTagProfileV1(value) {
-  return Boolean(
-    hasExactKeys(value, CONTEXT_TAG_PROFILE_KEYS) &&
-      isNonEmptyString(value.sessionId) &&
-      isNormalizedTagList(value.normalizedTags)
-  );
-}
-
-/**
- * @param {unknown} value
- * @returns {value is CandidateTagProfileV1}
- */
-export function isCandidateTagProfileV1(value) {
-  if (
-    !hasExactKeys(value, CANDIDATE_TAG_PROFILE_KEYS) ||
-    !isNonEmptyString(value.candidateId) ||
-    !isNonEmptyString(value.sessionId) ||
-    !isNativeTagList(value.nativeTags) ||
-    !isNormalizedTagList(value.normalizedTags)
-  ) {
-    return false;
-  }
-
-  const normalizedTagSet = new Set(value.normalizedTags);
-  return value.nativeTags.every((nativeTag) => {
-    const normalizedTag = normalizeTagForValidation(nativeTag);
-    return normalizedTag !== null && normalizedTagSet.has(normalizedTag);
-  });
-}
-
-/**
- * @param {unknown} value
- * @returns {value is SelectedTagWeightV1}
- */
-export function isSelectedTagWeightV1(value) {
-  return Boolean(
-    hasExactKeys(value, SELECTED_TAG_WEIGHT_KEYS) &&
-      typeof value.tag === "string" &&
-      normalizeTagForValidation(value.tag) === value.tag &&
-      Number.isInteger(value.candidateCount) &&
-      value.candidateCount > 0 &&
-      isUnitNumber(value.weight) &&
-      value.weight > 0
-  );
-}
-
-/**
- * @param {unknown} value
- * @returns {value is SessionSelectedTagProfileV1}
- */
-export function isSessionSelectedTagProfileV1(value) {
-  if (
-    !hasExactKeys(value, SESSION_SELECTED_TAG_PROFILE_KEYS) ||
-    !isNonEmptyString(value.sessionId) ||
-    !isNonNegativeInteger(value.selectedCandidateCount) ||
-    !Array.isArray(value.tags) ||
-    value.tags.length > TAG_LIMITS.maxTags ||
-    !value.tags.every(isSelectedTagWeightV1)
-  ) {
-    return false;
-  }
-
-  if (value.selectedCandidateCount === 0) {
-    return value.tags.length === 0;
-  }
-
-  return value.tags.every((entry, index) => {
-    if (entry.candidateCount > value.selectedCandidateCount) {
-      return false;
-    }
-    if (index === 0) {
-      return true;
-    }
-    const previous = value.tags[index - 1];
-    return (
-      previous.candidateCount > entry.candidateCount ||
-      (previous.candidateCount === entry.candidateCount &&
-        compareTagText(previous.tag, entry.tag) < 0)
-    );
-  });
 }
 
 /**
