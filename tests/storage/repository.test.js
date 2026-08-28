@@ -7,7 +7,11 @@ import {
   RepositoryVersionError,
   createRepository
 } from "../../storage/repository.js";
-import { DEFAULT_SETTINGS_V1, SCHEMA_VERSION } from "../../shared/types.js";
+import {
+  DEFAULT_SETTINGS_V1,
+  SCHEMA_VERSION,
+  SESSION_LIFECYCLE_STATUSES
+} from "../../shared/types.js";
 import { createTransactionalMemoryStorageAdapter } from "./fixtures/memoryStorageAdapter.js";
 
 function createCandidate(overrides = {}) {
@@ -52,6 +56,7 @@ function createSession(overrides = {}) {
       { candidate: createCandidate(), signals: createSignals() }
     ],
     updatedAt: 200,
+    status: SESSION_LIFECYCLE_STATUSES.OPEN,
     ...overrides
   };
 }
@@ -606,13 +611,145 @@ test("atomically creates a discovered Session with zero-value signals", async ()
         })
       }
     ],
-    updatedAt: 200
+    updatedAt: 200,
+    status: SESSION_LIFECYCLE_STATUSES.OPEN
   });
   assert.deepEqual(await repository.getActiveContext(), {
     sessionId: "session-1",
     context: createContext(),
     activatedAt: 200
   });
+});
+
+test("persists and enforces the Session lifecycle across Repository restarts", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  await repository.mergeDiscoveredCandidates(createDiscovery());
+
+  const restarted = createRepository(adapter);
+  assert.equal(
+    (await restarted.getSession("session-1")).status,
+    SESSION_LIFECYCLE_STATUSES.OPEN
+  );
+  assert.equal((await restarted.claimSessionFinalizationLease({
+    sessionId: "session-1",
+    finalizationLeaseId: "lifecycle-a",
+    claimedAt: 300,
+    leaseUntil: 400
+  })).acquired, true);
+  assert.equal(
+    (await restarted.claimSessionFinalizationLease({
+      sessionId: "session-1",
+      finalizationLeaseId: "lifecycle-a",
+      claimedAt: 350,
+      leaseUntil: 450
+    })).changed,
+    false
+  );
+  assert.equal(
+    await restarted.releaseSessionFinalizationLease(
+      "session-1",
+      "lifecycle-a",
+      400
+    ),
+    true
+  );
+  await restarted.claimSessionFinalizationLease({
+    sessionId: "session-1",
+    finalizationLeaseId: "lifecycle-b",
+    claimedAt: 500,
+    leaseUntil: 600
+  });
+  await restarted.finalizeSessionAtomically({
+    sessionId: "session-1",
+    finalizedAt: 500,
+    chosen: [],
+    missedPaths: [],
+    finalizationLeaseId: "lifecycle-b"
+  });
+  assert.equal(
+    (await createRepository(adapter).getSession("session-1")).status,
+    SESSION_LIFECYCLE_STATUSES.FINALIZED
+  );
+
+  const abandonedCandidate = createCandidate({
+    id: "candidate-abandoned",
+    url: "https://example.com/abandoned",
+    sessionId: "session-abandoned"
+  });
+  await restarted.mergeDiscoveredCandidates({
+    sessionId: "session-abandoned",
+    context: createContext(600),
+    candidates: [abandonedCandidate],
+    discoveredAt: 600
+  });
+  await restarted.markSessionAbandoned("session-abandoned", 700);
+  assert.equal(
+    (await restarted.getSession("session-abandoned")).status,
+    SESSION_LIFECYCLE_STATUSES.ABANDONED
+  );
+  assert.equal(await restarted.getActiveContext(), null);
+});
+
+test("persists, takes over, validates, and cancels finalization leases", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  await repository.mergeDiscoveredCandidates(createDiscovery());
+
+  assert.equal(
+    (await repository.claimSessionFinalizationLease({
+      sessionId: "session-1",
+      finalizationLeaseId: "lease-a",
+      claimedAt: 300,
+      leaseUntil: 400
+    })).acquired,
+    true
+  );
+  const leased = await repository.getSession("session-1");
+  assert.equal(leased.status, SESSION_LIFECYCLE_STATUSES.FINALIZING);
+  assert.equal(leased.finalizationLeaseId, "lease-a");
+  assert.equal(leased.leaseUntil, 400);
+  assert.equal(leased.updatedAt, 300);
+  assert.equal(
+    (await repository.claimSessionFinalizationLease({
+      sessionId: "session-1",
+      finalizationLeaseId: "lease-b",
+      claimedAt: 350,
+      leaseUntil: 450
+    })).acquired,
+    false
+  );
+  assert.equal(
+    (await repository.claimSessionFinalizationLease({
+      sessionId: "session-1",
+      finalizationLeaseId: "lease-b",
+      claimedAt: 400,
+      leaseUntil: 500
+    })).acquired,
+    true
+  );
+  await assert.rejects(
+    () => repository.finalizeSessionAtomically({
+      sessionId: "session-1",
+      finalizedAt: 410,
+      chosen: [],
+      missedPaths: [],
+      finalizationLeaseId: "lease-a"
+    }),
+    (error) =>
+      error instanceof RepositoryDataError &&
+      error.code === "SESSION_FINALIZATION_LEASE_LOST"
+  );
+
+  await repository.mergeDiscoveredCandidates(
+    createDiscovery([createCandidate()], { discoveredAt: 420 })
+  );
+  const resumed = await repository.getSession("session-1");
+  assert.equal(resumed.status, SESSION_LIFECYCLE_STATUSES.OPEN);
+  assert.equal(Object.hasOwn(resumed, "finalizationLeaseId"), false);
+  assert.equal(Object.hasOwn(resumed, "leaseUntil"), false);
+  assert.equal(resumed.updatedAt, 420);
 });
 
 test("switches and restores the one durable active context idempotently", async () => {
@@ -624,7 +761,7 @@ test("switches and restores the one durable active context idempotently", async 
   await repository.mergeDiscoveredCandidates(
     createDiscovery([createCandidate()], { discoveredAt: 300 })
   );
-  assert.equal(adapter.commitCount, commitsAfterFirstDiscovery);
+  assert.equal(adapter.commitCount, commitsAfterFirstDiscovery + 1);
 
   const nextContext = {
     query: "world models",
@@ -700,7 +837,7 @@ test("merges only new Candidates and preserves existing signals", async () => {
     sessionId: "session-1",
     acceptedCandidateIds: [],
     totalCandidateCount: 1,
-    updatedAt: 250
+    updatedAt: 300
   });
 
   const secondCandidate = createCandidate({
@@ -1192,6 +1329,7 @@ test("atomically persists session outputs and a durable idempotence marker", asy
   const adapter = createTransactionalMemoryStorageAdapter();
   const repository = createRepository(adapter);
   await repository.getSchemaVersion();
+  await repository.saveSession(createSession());
   const chosen = createChosen();
   const missedPath = createMissedPath({
     id: "missed-2",

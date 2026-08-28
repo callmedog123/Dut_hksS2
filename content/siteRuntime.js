@@ -14,6 +14,12 @@ import { createCandidateClickCollector } from "./eventCollector/click.js";
 import { createHoverTracker } from "./eventCollector/hover.js";
 import { createVisibilityTracker } from "./visibility.js";
 
+export const SITE_RUNTIME_CHECKPOINT_CONFIG = Object.freeze({
+  // Initial P0 value. Calibrate against the 5-10 person browser trial before
+  // treating this write/loss trade-off as validated.
+  maxIntervalMs: 2_000
+});
+
 export class SiteRuntimeError extends Error {
   constructor(message, cause) {
     super(message, cause === undefined ? undefined : { cause });
@@ -105,6 +111,8 @@ function assertRuntimeAdapter(adapter) {
  *   IntersectionObserver?: typeof IntersectionObserver,
  *   sessionIdFactory?: (contextKey: string) => string,
  *   eventFactory?: (type: string) => Event,
+ *   setTimeout?: typeof globalThis.setTimeout,
+ *   clearTimeout?: typeof globalThis.clearTimeout,
  *   onStatus?: (status: {state: string, message: string, data?: unknown}) => void
  * }} [options]
  */
@@ -121,6 +129,10 @@ export function createSiteRuntime(options = {}) {
   const performanceNow =
     options.performanceNow ?? (() => globalThis.performance.now());
   const onStatus = options.onStatus ?? (() => {});
+  const scheduleTimeout =
+    options.setTimeout ?? globalThis.setTimeout.bind(globalThis);
+  const cancelTimeout =
+    options.clearTimeout ?? globalThis.clearTimeout.bind(globalThis);
   const sendMessage =
     options.sendMessage ??
     createDefaultMessageSender(
@@ -144,6 +156,8 @@ export function createSiteRuntime(options = {}) {
     typeof onStatus !== "function" ||
     typeof sendMessage !== "function" ||
     typeof readUrl !== "function" ||
+    typeof scheduleTimeout !== "function" ||
+    typeof cancelTimeout !== "function" ||
     typeof options.createAdapter !== "function" ||
     typeof siteLabel !== "string" ||
     siteLabel.trim().length === 0 ||
@@ -159,6 +173,7 @@ export function createSiteRuntime(options = {}) {
   let observerCleanup = () => {};
   let writeTail = Promise.resolve();
   let transitionTail = Promise.resolve();
+  let checkpointTail = Promise.resolve();
   const pendingBindings = new Map();
 
   function readWallNow() {
@@ -270,12 +285,102 @@ export function createSiteRuntime(options = {}) {
     );
   }
 
-  function enqueueSignals(session, state) {
+  function enqueueSignalsSnapshot(session, snapshot) {
     return enqueueMessage(
-      createSignalsUpdatedMessage(snapshotSignals(state), readWallNow()),
+      createSignalsUpdatedMessage(snapshot, readWallNow()),
       isSignalsUpdatedResponse,
       session
     );
+  }
+
+  function signalsAreEqual(left, right) {
+    return Boolean(
+      left !== undefined &&
+        left.visibleMs === right.visibleMs &&
+        left.hoverMs === right.hoverMs &&
+        left.hoverCount === right.hoverCount &&
+        left.returnCount === right.returnCount &&
+        left.clicked === right.clicked
+    );
+  }
+
+  function collectLiveSignals(session) {
+    if (session.collectors === null) {
+      return;
+    }
+    for (const [candidateId, registration] of session.registrations) {
+      mergeVisibility(
+        session,
+        candidateId,
+        session.collectors.visibility.getVisibleMs(candidateId),
+        session.collectors.visibility.getReturnCount(candidateId)
+      );
+      mergeHover(
+        session,
+        candidateId,
+        session.collectors.hover.getHoverAggregate(candidateId)
+      );
+      const state = session.signals.get(candidateId);
+      if (state !== undefined && registration.binding.candidate.clicked === true) {
+        state.clicked = true;
+      }
+    }
+  }
+
+  async function performCheckpoint(session) {
+    collectLiveSignals(session);
+    let writes = 0;
+    for (const state of session.signals.values()) {
+      const snapshot = snapshotSignals(state);
+      if (
+        signalsAreEqual(
+          session.acknowledgedSignals.get(state.candidateId),
+          snapshot
+        )
+      ) {
+        continue;
+      }
+      await enqueueSignalsSnapshot(session, snapshot);
+      session.acknowledgedSignals.set(state.candidateId, snapshot);
+      writes += 1;
+    }
+    return writes;
+  }
+
+  function queueCheckpoint(session) {
+    const operation = checkpointTail.then(() => performCheckpoint(session));
+    checkpointTail = operation.catch(() => undefined);
+    return operation;
+  }
+
+  function stopCheckpointTimer(session) {
+    if (session.checkpointTimer === null) {
+      return;
+    }
+    cancelTimeout(session.checkpointTimer);
+    session.checkpointTimer = null;
+  }
+
+  function scheduleCheckpointTimer(session) {
+    if (
+      session.checkpointTimer !== null ||
+      disposed ||
+      !collectionEnabled ||
+      activeSession !== session ||
+      lifecycle !== "collecting" ||
+      session.finalized
+    ) {
+      return;
+    }
+    session.checkpointTimer = scheduleTimeout(() => {
+      session.checkpointTimer = null;
+      const checkpoint = queueCheckpoint(session);
+      reportBackgroundWrite(checkpoint, `${siteLabel} 信号检查点`);
+      void checkpoint
+        .finally(() => scheduleCheckpointTimer(session))
+        .catch(() => undefined);
+    }, SITE_RUNTIME_CHECKPOINT_CONFIG.maxIntervalMs);
+    session.checkpointTimer?.unref?.();
   }
 
   function shouldReportSignals(session) {
@@ -299,20 +404,12 @@ export function createSiteRuntime(options = {}) {
       now: readCollectorNow,
       onVisibleMsUpdated({ candidateId, visibleMs }) {
         mergeVisibility(session, candidateId, visibleMs, null);
-        const state = session.signals.get(candidateId);
-        if (state !== undefined && shouldReportSignals(session)) {
-          reportBackgroundWrite(
-            enqueueSignals(session, state),
-            `${siteLabel} 可见时长`
-          );
-        }
       },
       onReturnCountUpdated({ candidateId, returnCount }) {
         mergeVisibility(session, candidateId, null, returnCount);
-        const state = session.signals.get(candidateId);
-        if (state !== undefined && shouldReportSignals(session)) {
+        if (session.signals.has(candidateId) && shouldReportSignals(session)) {
           reportBackgroundWrite(
-            enqueueSignals(session, state),
+            queueCheckpoint(session),
             `${siteLabel} 回访次数`
           );
         }
@@ -323,10 +420,12 @@ export function createSiteRuntime(options = {}) {
       now: readCollectorNow,
       onHoverUpdated(aggregate) {
         mergeHover(session, aggregate.candidateId, aggregate);
-        const state = session.signals.get(aggregate.candidateId);
-        if (state !== undefined && shouldReportSignals(session)) {
+        if (
+          session.signals.has(aggregate.candidateId) &&
+          shouldReportSignals(session)
+        ) {
           reportBackgroundWrite(
-            enqueueSignals(session, state),
+            queueCheckpoint(session),
             `${siteLabel} 悬停信号`
           );
         }
@@ -352,7 +451,7 @@ export function createSiteRuntime(options = {}) {
         reportBackgroundWrite(chosenWrite, `${siteLabel} 选择状态`);
         if (state !== undefined) {
           reportBackgroundWrite(
-            enqueueSignals(session, state),
+            queueCheckpoint(session),
             `${siteLabel} 选择信号`
           );
         }
@@ -443,6 +542,12 @@ export function createSiteRuntime(options = {}) {
     mergeHover(session, binding.candidate.id, hover);
     session.registrations.delete(binding.candidate.id);
     session.retiredCandidateIds.add(binding.candidate.id);
+    if (shouldReportSignals(session)) {
+      reportBackgroundWrite(
+        queueCheckpoint(session),
+        `${siteLabel} 候选卸载信号`
+      );
+    }
   }
 
   function cleanupCollectorGroup(session) {
@@ -475,6 +580,7 @@ export function createSiteRuntime(options = {}) {
   function pauseCollection(session) {
     collectionEnabled = false;
     if (session !== null) {
+      stopCheckpointTimer(session);
       cleanupCollectorGroup(session);
     }
     lifecycle = "paused";
@@ -521,11 +627,13 @@ export function createSiteRuntime(options = {}) {
       contextIdentity: contextIdentity(context),
       candidates: new Map(),
       signals: new Map(),
+      acknowledgedSignals: new Map(),
       bindings: new Map(),
       acceptedCandidateIds: new Set(),
       retiredCandidateIds: new Set(),
       registrations: new Map(),
       collectors: null,
+      checkpointTimer: null,
       finalized: false,
       finalization: null,
       finalizingPromise: null
@@ -586,28 +694,7 @@ export function createSiteRuntime(options = {}) {
   assertRuntimeAdapter(adapter);
 
   async function flushSessionSignals(session) {
-    if (session.collectors !== null) {
-      for (const [candidateId, registration] of session.registrations) {
-        mergeVisibility(
-          session,
-          candidateId,
-          session.collectors.visibility.getVisibleMs(candidateId),
-          session.collectors.visibility.getReturnCount(candidateId)
-        );
-        mergeHover(
-          session,
-          candidateId,
-          session.collectors.hover.getHoverAggregate(candidateId)
-        );
-        if (registration.binding.candidate.clicked === true) {
-          session.signals.get(candidateId).clicked = true;
-        }
-      }
-    }
-
-    for (const state of session.signals.values()) {
-      await enqueueSignals(session, state);
-    }
+    return queueCheckpoint(session);
   }
 
   function finalizeSession(session, reason) {
@@ -620,6 +707,7 @@ export function createSiteRuntime(options = {}) {
 
     session.finalizingPromise = (async () => {
       lifecycle = "finalizing";
+      stopCheckpointTimer(session);
       cleanupCollectorGroup(session);
       await flushSessionSignals(session);
       const response = await enqueueMessage(
@@ -685,9 +773,21 @@ export function createSiteRuntime(options = {}) {
     // exists durably, even when a retry reports no newly accepted IDs.
     for (const candidate of candidates) {
       activeSession.acceptedCandidateIds.add(candidate.id);
+      if (!activeSession.acknowledgedSignals.has(candidate.id)) {
+        activeSession.acknowledgedSignals.set(candidate.id, {
+          candidateId: candidate.id,
+          sessionId: candidate.sessionId,
+          visibleMs: 0,
+          hoverMs: 0,
+          hoverCount: 0,
+          returnCount: 0,
+          clicked: false
+        });
+      }
     }
     registerAcceptedBindings(activeSession);
     lifecycle = "collecting";
+    scheduleCheckpointTimer(activeSession);
     emitStatus(
       "collecting",
       `${siteLabel} Runtime 正在采集 ${response.data.totalCandidateCount} 个候选项。`,
@@ -794,7 +894,7 @@ export function createSiteRuntime(options = {}) {
       collectionEnabled
     ) {
       reportBackgroundWrite(
-        flushSessionSignals(activeSession),
+        queueCheckpoint(activeSession),
         `${siteLabel} 页面隐藏信号`
       );
     }
@@ -855,7 +955,6 @@ export function createSiteRuntime(options = {}) {
     if (disposed) {
       return;
     }
-    disposed = true;
     lifecycle = "cleaning";
     observerCleanup();
     observerCleanup = () => {};
@@ -866,8 +965,14 @@ export function createSiteRuntime(options = {}) {
     pageLifecycle.removeEventListener("pagehide", handlePageExit);
     pageLifecycle.removeEventListener("beforeunload", handlePageExit);
     if (activeSession !== null) {
+      stopCheckpointTimer(activeSession);
       cleanupCollectorGroup(activeSession);
+      reportBackgroundWrite(
+        queueCheckpoint(activeSession),
+        `${siteLabel} 清理信号`
+      );
     }
+    disposed = true;
     pendingBindings.clear();
     activeSession = null;
     lifecycle = "cleaned";
@@ -876,6 +981,7 @@ export function createSiteRuntime(options = {}) {
 
   async function whenIdle() {
     await transitionTail;
+    await checkpointTail;
     await writeTail;
   }
 

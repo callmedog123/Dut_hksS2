@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createSessionManager } from "../../background/sessionManager.js";
+import { SESSION_LIFECYCLE_STATUSES } from "../../shared/types.js";
 import {
   RepositoryDataError,
   createRepository
@@ -75,6 +76,14 @@ test("isolates identical query and session IDs across two tab owners", async () 
   assert.deepEqual(
     (await repository.getSession("shared-session", secondOwner)).owner,
     secondOwner
+  );
+  assert.equal(
+    (await repository.getSession("shared-session", firstOwner)).status,
+    SESSION_LIFECYCLE_STATUSES.OPEN
+  );
+  assert.equal(
+    (await repository.getSession("shared-session", secondOwner)).status,
+    SESSION_LIFECYCLE_STATUSES.OPEN
   );
 
   await repository.mergeCandidateSignalsSnapshot(

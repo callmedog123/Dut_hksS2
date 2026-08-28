@@ -203,8 +203,8 @@ Bilibili / Zhihu / Douyin Search Page
 | 1 | 抽取通用真实站点 Runtime | P0 | 0 | COMPLETED |
 | 2 | schemaVersion 2 与 v1 数据迁移 | P0 | 1 | COMPLETED |
 | 3 | Session Owner 与多标签页 Active Context | P0 | 2 | COMPLETED |
-| 4 | 信号检查点与持久化 Session 生命周期 | P0 | 3 | PENDING |
-| 5 | Worker/浏览器重启后的自动恢复结算 | P0 | 4 | PENDING |
+| 4 | 信号检查点与持久化 Session 生命周期 | P0 | 3 | COMPLETED |
+| 5 | Worker/浏览器重启后的自动恢复结算 | P0 | 4 | COMPLETED |
 | 6 | Side Panel 跟随当前激活标签页 | P0 | 5 | PENDING |
 | 7 | 本地标签纯函数与共享类型 | P1 | 2 | PENDING |
 | 8 | 标签 Repository 与懒加载 Provider | P1 | 4、7 | PENDING |
@@ -466,6 +466,12 @@ finalize、Worker 重启和 storage 失败。
 验收：
 快照节流、最大延迟、乱序、重复、页面隐藏、两个 tab、写入失败、cleanup、
 Worker 重启后 OPEN 状态保留。
+
+实现记录（2026-08-28）：最大检查点间隔经确认设为 `2,000 ms`，集中在
+`SITE_RUNTIME_CHECKPOINT_CONFIG`。Runtime 只发送相对最近成功确认发生变化的
+绝对累计快照；失败快照保留为待重试。Session 生命周期已持久化为 `OPEN`、
+`FINALIZING`、`FINALIZED`、`ABANDONED`，结算失败回退 `OPEN`，而遗留 Session
+自动扫描与结算仍明确留给任务 5。
 ```
 
 ### 任务 5：自动恢复和可接管 Finalize
@@ -499,6 +505,13 @@ Worker 下次被唤醒时扫描遗留 OPEN 或租约过期的 FINALIZING Session
 验收：
 强制退出模拟、finalize 中途终止、租约接管、重复扫描、两 tab、空 Session、
 Chosen、存储回滚、重启后不重复。
+
+实现记录（2026-08-28）：恢复窗口暂定为 `30,000 ms`，持久化 finalize 租约
+时长为 `15,000 ms`。浏览器启动扫描过期 `OPEN` 与 `FINALIZING` Session；普通
+Worker 唤醒只接管租约已过期的 `FINALIZING`，避免把仍存活但暂时安静的页面
+误结算。页面以原 Session 重新 discovery 会刷新活动时间并撤销尚未完成的租约。
+空候选或全零信号 Session 原子转为 `ABANDONED`；其他 Session 使用最后持久化
+快照生成 Chosen/MissedPath。未增加 tabs 权限、常驻定时器或自动网络行为。
 ```
 
 ### 任务 6：Side Panel 跟随当前标签页

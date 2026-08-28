@@ -41,6 +41,13 @@ export const REENCOUNTER_FEEDBACK_OUTCOMES = Object.freeze({
   OPENED: REENCOUNTER_OUTCOMES.OPENED
 });
 
+export const SESSION_LIFECYCLE_STATUSES = Object.freeze({
+  OPEN: "OPEN",
+  FINALIZING: "FINALIZING",
+  FINALIZED: "FINALIZED",
+  ABANDONED: "ABANDONED"
+});
+
 export const DEFAULT_SETTINGS_V1 = Object.freeze({
   enabled: true,
   allowlist: Object.freeze([]),
@@ -54,6 +61,7 @@ export const DEFAULT_SETTINGS_V1 = Object.freeze({
 /** @typedef {typeof REENCOUNTER_REASON_CODES[keyof typeof REENCOUNTER_REASON_CODES]} ReencounterReasonCodeV1 */
 /** @typedef {typeof REENCOUNTER_OUTCOMES[keyof typeof REENCOUNTER_OUTCOMES]} ReencounterOutcomeV1 */
 /** @typedef {typeof REENCOUNTER_FEEDBACK_OUTCOMES[keyof typeof REENCOUNTER_FEEDBACK_OUTCOMES]} ReencounterFeedbackOutcomeV1 */
+/** @typedef {typeof SESSION_LIFECYCLE_STATUSES[keyof typeof SESSION_LIFECYCLE_STATUSES]} SessionLifecycleStatusV2 */
 
 /**
  * Background-authoritative identity for one content-document Session.
@@ -314,6 +322,14 @@ export function isSessionOwnerV1(value) {
       isNonNegativeInteger(value.frameId) &&
       isNonEmptyString(value.sessionId)
   );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is SessionLifecycleStatusV2}
+ */
+export function isSessionLifecycleStatusV2(value) {
+  return isConstantValue(SESSION_LIFECYCLE_STATUSES, value);
 }
 
 /**

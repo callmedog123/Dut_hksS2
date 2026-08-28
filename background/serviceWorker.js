@@ -14,6 +14,7 @@ import { createRepository } from "../storage/repository.js";
 import { createMessageRouter } from "./messageRouter.js";
 import { createSessionFinalizeUseCase } from "./sessionFinalize.js";
 import { createSessionManager } from "./sessionManager.js";
+import { createSessionRecoveryCoordinator } from "./sessionRecovery.js";
 import {
   SessionOwnerError,
   createSessionOwnerFromSender
@@ -33,6 +34,33 @@ function getSessionManager() {
     sessionManager = createSessionManager(getRepository());
   }
   return sessionManager;
+}
+
+let sessionRecoveryCoordinator;
+function getSessionRecoveryCoordinator() {
+  if (sessionRecoveryCoordinator === undefined) {
+    sessionRecoveryCoordinator = createSessionRecoveryCoordinator(
+      getRepository(),
+      getSessionManager()
+    );
+  }
+  return sessionRecoveryCoordinator;
+}
+
+async function runSessionRecovery(includeOpen) {
+  try {
+    const result = await getSessionRecoveryCoordinator().scan({ includeOpen });
+    for (const failure of result.failed) {
+      console.error(
+        `[The Unclicked] Failed to recover Session ${failure.sessionId}.`,
+        failure.error
+      );
+    }
+    return result;
+  } catch (error) {
+    console.error("[The Unclicked] Session recovery scan failed.", error);
+    return null;
+  }
 }
 
 const sessionFinalizeUseCase = createSessionFinalizeUseCase({
@@ -189,6 +217,10 @@ chrome.runtime.onInstalled.addListener(() => {
     });
 });
 
+chrome.runtime.onStartup?.addListener(() => {
+  return runSessionRecovery(true);
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (
     Object.values(MESSAGE_TYPES).includes(message?.type) &&
@@ -236,3 +268,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   handleCurrentMessage(message, sender).then(sendResponse);
   return true;
 });
+
+// A newly evaluated Worker may safely take over only expired FINALIZING
+// leases. Stale OPEN Sessions are handled on browser startup, leaving a living
+// page free to re-register after an ordinary MV3 Worker sleep/wake cycle.
+if (globalThis.indexedDB !== undefined) {
+  void runSessionRecovery(false);
+}

@@ -6,6 +6,10 @@ import {
 } from "./consideration.js";
 import { createSessionOwnerKey } from "../storage/repository.js";
 
+export const SESSION_FINALIZATION_CONFIG = Object.freeze({
+  leaseDurationMs: 15_000
+});
+
 function isNonEmptyString(value) {
   return typeof value === "string" && value.length > 0;
 }
@@ -17,6 +21,26 @@ function createResultId(sessionId, candidateId, owner) {
   return `${sessionIdentity}:${encodeURIComponent(candidateId)}`;
 }
 
+function createDefaultLeaseId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `lease-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function hasMeaningfulSignals(session) {
+  return Boolean(
+    session.candidates.length > 0 &&
+      session.candidates.some(({ signals }) =>
+        signals.clicked ||
+        signals.visibleMs > 0 ||
+        signals.hoverMs > 0 ||
+        signals.hoverCount > 0 ||
+        signals.returnCount > 0
+      )
+  );
+}
+
 function assertRepository(repository) {
   if (typeof repository !== "object" || repository === null) {
     throw new TypeError("Session Manager requires a Repository.");
@@ -25,6 +49,9 @@ function assertRepository(repository) {
     "getSession",
     "getSessionFinalization",
     "finalizeSessionAtomically",
+    "abandonSessionAtomically",
+    "claimSessionFinalizationLease",
+    "releaseSessionFinalizationLease",
     "markCandidateChosen",
     "getChosen",
     "getMissedPath"
@@ -59,9 +86,20 @@ async function loadFinalizedRecords(repository, marker) {
  * result without relying on memory.
  *
  * @param {ReturnType<typeof import("../storage/repository.js").createRepository>} repository
+ * @param {{leaseIdFactory?: () => string, leaseDurationMs?: number}} [options]
  */
-export function createSessionManager(repository) {
+export function createSessionManager(repository, options = {}) {
   assertRepository(repository);
+  const leaseIdFactory = options.leaseIdFactory ?? createDefaultLeaseId;
+  const leaseDurationMs =
+    options.leaseDurationMs ?? SESSION_FINALIZATION_CONFIG.leaseDurationMs;
+  if (
+    typeof leaseIdFactory !== "function" ||
+    !Number.isFinite(leaseDurationMs) ||
+    leaseDurationMs <= 0
+  ) {
+    throw new TypeError("Session Manager lease configuration is invalid.");
+  }
 
   return Object.freeze({
     /**
@@ -101,8 +139,15 @@ export function createSessionManager(repository) {
      *
      * @param {string} sessionId
      * @param {number} [finalizedAt]
+     * @param {import("../shared/types.js").SessionOwnerV1} [owner]
+     * @param {{finalizationLeaseId?: string, abandonIfNoMeaningful?: boolean}} [recoveryOptions]
      */
-    async finalizeSession(sessionId, finalizedAt = Date.now(), owner) {
+    async finalizeSession(
+      sessionId,
+      finalizedAt = Date.now(),
+      owner,
+      recoveryOptions = {}
+    ) {
       if (!isNonEmptyString(sessionId)) {
         throw new TypeError("sessionId must be a non-empty string.");
       }
@@ -112,6 +157,19 @@ export function createSessionManager(repository) {
         finalizedAt < 0
       ) {
         throw new TypeError("finalizedAt must be a finite non-negative number.");
+      }
+      const finalizationLeaseId =
+        recoveryOptions.finalizationLeaseId ?? leaseIdFactory();
+      if (
+        !isNonEmptyString(finalizationLeaseId) ||
+        (recoveryOptions.abandonIfNoMeaningful !== undefined &&
+          typeof recoveryOptions.abandonIfNoMeaningful !== "boolean")
+      ) {
+        throw new TypeError("Session finalization options are invalid.");
+      }
+      const leaseUntil = finalizedAt + leaseDurationMs;
+      if (!Number.isFinite(leaseUntil)) {
+        throw new TypeError("Session finalization leaseUntil is invalid.");
       }
 
       const existingMarker =
@@ -126,72 +184,124 @@ export function createSessionManager(repository) {
         };
       }
 
-      const session = await repository.getSession(sessionId, owner);
-      if (session === null) {
-        throw new Error(`Session not found: ${sessionId}`);
-      }
-
-      const chosen = [];
-      const missedPaths = [];
-      for (const entry of session.candidates) {
-        const consideration = calculateConsideration(entry.signals);
-        const id = createResultId(sessionId, entry.candidate.id, owner);
-
-        if (entry.signals.clicked) {
-          chosen.push({
-            id,
-            candidate: entry.candidate,
-            context: session.context,
-            chosenAt: finalizedAt
-          });
-          continue;
-        }
-
-        if (
-          consideration.classification ===
-          CONSIDERATION_CLASSIFICATIONS.QUALIFIES
-        ) {
-          missedPaths.push({
-            id,
-            candidate: entry.candidate,
-            context: session.context,
-            score: consideration.score,
-            reasons: consideration.reasons,
-            status: "MISSED",
-            createdAt: finalizedAt
-          });
-        }
-      }
-
-      const persisted = await repository.finalizeSessionAtomically(
+      const lease = await repository.claimSessionFinalizationLease(
         {
           sessionId,
-          finalizedAt,
-          chosen,
-          missedPaths
+          finalizationLeaseId,
+          claimedAt: finalizedAt,
+          leaseUntil
         },
         owner
       );
-      if (!persisted.created) {
-        const records = await loadFinalizedRecords(
-          repository,
-          persisted.finalization
+      if (!lease.acquired) {
+        throw new Error(
+          `Session finalization lease is unavailable: ${sessionId}`
         );
+      }
+      try {
+        const session = await repository.getSession(sessionId, owner);
+        if (session === null) {
+          throw new Error(`Session not found: ${sessionId}`);
+        }
+
+        if (
+          recoveryOptions.abandonIfNoMeaningful === true &&
+          !hasMeaningfulSignals(session)
+        ) {
+          await repository.abandonSessionAtomically(
+            {
+              sessionId,
+              abandonedAt: finalizedAt,
+              finalizationLeaseId
+            },
+            owner
+          );
+          return {
+            sessionId,
+            abandonedAt: finalizedAt,
+            abandoned: true,
+            alreadyFinalized: false,
+            chosen: [],
+            missedPaths: []
+          };
+        }
+
+        const chosen = [];
+        const missedPaths = [];
+        for (const entry of session.candidates) {
+          const consideration = calculateConsideration(entry.signals);
+          const id = createResultId(sessionId, entry.candidate.id, owner);
+
+          if (entry.signals.clicked) {
+            chosen.push({
+              id,
+              candidate: entry.candidate,
+              context: session.context,
+              chosenAt: finalizedAt
+            });
+            continue;
+          }
+
+          if (
+            consideration.classification ===
+            CONSIDERATION_CLASSIFICATIONS.QUALIFIES
+          ) {
+            missedPaths.push({
+              id,
+              candidate: entry.candidate,
+              context: session.context,
+              score: consideration.score,
+              reasons: consideration.reasons,
+              status: "MISSED",
+              createdAt: finalizedAt
+            });
+          }
+        }
+
+        const persisted = await repository.finalizeSessionAtomically(
+          {
+            sessionId,
+            finalizedAt,
+            chosen,
+            missedPaths,
+            finalizationLeaseId
+          },
+          owner
+        );
+        if (!persisted.created) {
+          const records = await loadFinalizedRecords(
+            repository,
+            persisted.finalization
+          );
+          return {
+            sessionId,
+            finalizedAt: persisted.finalization.finalizedAt,
+            alreadyFinalized: true,
+            ...records
+          };
+        }
+
         return {
           sessionId,
-          finalizedAt: persisted.finalization.finalizedAt,
-          alreadyFinalized: true,
-          ...records
+          finalizedAt,
+          alreadyFinalized: false,
+          chosen,
+          missedPaths
         };
+      } catch (error) {
+        try {
+          await repository.releaseSessionFinalizationLease(
+            sessionId,
+            finalizationLeaseId,
+            finalizedAt,
+            owner
+          );
+        } catch {
+          // Preserve the settlement error. If this Worker was interrupted, the
+          // durable lease can be taken over after leaseUntil.
+        }
+        throw error;
       }
-
-      return {
-        sessionId,
-        finalizedAt,
-        alreadyFinalized: false,
-        chosen,
-        missedPaths
-      };
     }
   });
 }

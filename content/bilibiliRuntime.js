@@ -33,6 +33,8 @@ function isRecord(value) {
  *   IntersectionObserver?: typeof IntersectionObserver,
  *   sessionIdFactory?: (contextKey: string) => string,
  *   eventFactory?: (type: string) => Event,
+ *   setTimeout?: typeof globalThis.setTimeout,
+ *   clearTimeout?: typeof globalThis.clearTimeout,
  *   onStatus?: (status: {state: string, message: string, data?: unknown}) => void
  * }} [options]
  */

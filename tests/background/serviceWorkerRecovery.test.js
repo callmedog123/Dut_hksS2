@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createSessionManager } from "../../background/sessionManager.js";
+import { SESSION_RECOVERY_CONFIG } from "../../background/sessionRecovery.js";
 import {
   ACTIVE_CONTEXT_STATUSES,
   REENCOUNTER_FEEDBACK_OUTCOMES,
@@ -20,6 +21,7 @@ import {
   createSignalsUpdatedMessage,
   isActiveContextQueryResponse
 } from "../../shared/messages.js";
+import { SESSION_LIFECYCLE_STATUSES } from "../../shared/types.js";
 import { createIndexedDbStorageAdapter } from "../../storage/indexedDbStorageAdapter.js";
 import { createRepository } from "../../storage/repository.js";
 import { createFakeIndexedDB } from "../storage/fixtures/fakeIndexedDB.js";
@@ -114,9 +116,15 @@ function createReencounter() {
 
 async function loadServiceWorker(label, activeTabId = DEFAULT_OWNER.tabId) {
   let messageListener;
+  let startupListener;
   globalThis.chrome = {
     runtime: {
       onInstalled: { addListener() {} },
+      onStartup: {
+        addListener(listener) {
+          startupListener = listener;
+        }
+      },
       onMessage: {
         addListener(listener) {
           messageListener = listener;
@@ -143,6 +151,8 @@ async function loadServiceWorker(label, activeTabId = DEFAULT_OWNER.tabId) {
     `../../background/serviceWorker.js?recovery-${label}-${Date.now()}-${Math.random()}`
   );
   assert.equal(typeof messageListener, "function");
+  assert.equal(typeof startupListener, "function");
+  messageListener.startupListener = startupListener;
   return messageListener;
 }
 
@@ -220,6 +230,59 @@ test("Worker migrates v1 IndexedDB data before recovery queries", async () => {
   }
 });
 
+test("browser startup recovers a stale OPEN Session once", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+  const staleAt = Date.now() - SESSION_RECOVERY_CONFIG.recoveryWindowMs - 1_000;
+  const repository = createRepository(
+    createIndexedDbStorageAdapter({ indexedDB })
+  );
+  await repository.mergeDiscoveredCandidates(
+    {
+      sessionId: "session-1",
+      context: createContext(staleAt),
+      candidates: [createCandidate()],
+      discoveredAt: staleAt
+    },
+    DEFAULT_OWNER
+  );
+  await repository.mergeCandidateSignalsSnapshot(
+    {
+      signals: {
+        ...createSignals(false),
+        visibleMs: 10_000,
+        hoverMs: 3_000,
+        hoverCount: 3,
+        returnCount: 1
+      },
+      updatedAt: staleAt + 1
+    },
+    DEFAULT_OWNER
+  );
+
+  try {
+    const firstWorker = await loadServiceWorker("startup-recovery-first");
+    await firstWorker.startupListener();
+    const afterFirstStartup = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    assert.equal(
+      (await afterFirstStartup.getSession("session-1", DEFAULT_OWNER)).status,
+      SESSION_LIFECYCLE_STATUSES.FINALIZED
+    );
+    assert.equal((await afterFirstStartup.listMissedPaths()).length, 1);
+
+    const restartedWorker = await loadServiceWorker(
+      "startup-recovery-restarted"
+    );
+    await restartedWorker.startupListener();
+    assert.equal((await afterFirstStartup.listMissedPaths()).length, 1);
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
 test("CANDIDATES_DISCOVERED merges persisted Sessions after Worker restart", async () => {
   const indexedDB = createFakeIndexedDB();
   globalThis.indexedDB = indexedDB;
@@ -291,6 +354,7 @@ test("CANDIDATES_DISCOVERED merges persisted Sessions after Worker restart", asy
       "session-1",
       DEFAULT_OWNER
     );
+    assert.equal(persisted.status, SESSION_LIFECYCLE_STATUSES.OPEN);
     assert.equal(persisted.candidates.length, 2);
     assert.deepEqual(persisted.candidates[0].signals, {
       candidateId: "candidate-1",

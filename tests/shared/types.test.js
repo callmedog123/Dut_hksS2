@@ -9,6 +9,7 @@ import {
   REENCOUNTER_OUTCOMES,
   REENCOUNTER_REASON_CODES,
   SCHEMA_VERSION,
+  SESSION_LIFECYCLE_STATUSES,
   isCandidateSignalsV1,
   isCandidateV1,
   isConsiderationReasonV1,
@@ -18,6 +19,7 @@ import {
   isReencounterRecordV1,
   isReencounterReasonV1,
   isSearchContextV1,
+  isSessionLifecycleStatusV2,
   isSettingsV1
 } from "../../shared/types.js";
 import { MESSAGE_SCHEMA_VERSION } from "../../shared/messages.js";
@@ -185,6 +187,21 @@ test("freezes the shared v1 DTO enums", () => {
     "MISSED",
     "REENCOUNTERED"
   ]);
+});
+
+test("freezes and strictly validates persistent Session lifecycle states", () => {
+  assert.equal(Object.isFrozen(SESSION_LIFECYCLE_STATUSES), true);
+  assert.deepEqual(SESSION_LIFECYCLE_STATUSES, {
+    OPEN: "OPEN",
+    FINALIZING: "FINALIZING",
+    FINALIZED: "FINALIZED",
+    ABANDONED: "ABANDONED"
+  });
+  for (const status of Object.values(SESSION_LIFECYCLE_STATUSES)) {
+    assert.equal(isSessionLifecycleStatusV2(status), true);
+  }
+  assert.equal(isSessionLifecycleStatusV2("finalized"), false);
+  assert.equal(isSessionLifecycleStatusV2("UNKNOWN"), false);
 });
 
 test("validates strict ConsiderationReasonV1 with optional nonnegative contribution", () => {

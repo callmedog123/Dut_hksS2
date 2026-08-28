@@ -175,7 +175,10 @@ test("atomically migrates every complete v1 record and feedback to v2", async ()
 
   const repository = createRepository(adapter);
   assert.equal(await repository.getSchemaVersion(), SCHEMA_VERSION);
-  assert.deepEqual(await repository.getSession("session-1"), legacy.data.session);
+  assert.deepEqual(await repository.getSession("session-1"), {
+    ...legacy.data.session,
+    status: "FINALIZED"
+  });
   assert.deepEqual(await repository.getActiveContext(), legacy.data.activeContext);
   assert.deepEqual(await repository.getChosen("chosen-1"), legacy.data.chosen);
   assert.deepEqual(

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { createSessionManager } from "../../background/sessionManager.js";
 import { CONSIDERATION_SCORING_CONFIG } from "../../background/scoringConfig.js";
+import { SESSION_LIFECYCLE_STATUSES } from "../../shared/types.js";
 import { createRepository } from "../../storage/repository.js";
 import { createTransactionalMemoryStorageAdapter } from "../storage/fixtures/memoryStorageAdapter.js";
 
@@ -231,17 +232,34 @@ test("storage failure leaves no contradictory outputs and a retry can settle", a
     ])
   );
   const failure = new Error("simulated atomic finalization failure");
+  await repository.claimSessionFinalizationLease({
+    sessionId: "session-1",
+    finalizationLeaseId: "lease-retry",
+    claimedAt: 499,
+    leaseUntil: 1_000
+  });
   adapter.failNextCommit(failure);
 
   await assert.rejects(
-    () => manager.finalizeSession("session-1", 500),
+    () =>
+      manager.finalizeSession("session-1", 500, undefined, {
+        finalizationLeaseId: "lease-retry"
+      }),
     (error) => error === failure
   );
   assert.deepEqual(await repository.listChosen(), []);
   assert.deepEqual(await repository.listMissedPaths(), []);
   assert.equal(await repository.getSessionFinalization("session-1"), null);
+  assert.equal(
+    (await repository.getSession("session-1")).status,
+    SESSION_LIFECYCLE_STATUSES.OPEN
+  );
 
   const retry = await manager.finalizeSession("session-1", 500);
   assert.equal(retry.chosen.length, 1);
   assert.equal(retry.missedPaths.length, 1);
+  assert.equal(
+    (await repository.getSession("session-1")).status,
+    SESSION_LIFECYCLE_STATUSES.FINALIZED
+  );
 });

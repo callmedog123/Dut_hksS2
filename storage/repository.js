@@ -3,12 +3,14 @@
 import {
   DEFAULT_SETTINGS_V1,
   SCHEMA_VERSION,
+  SESSION_LIFECYCLE_STATUSES,
   isCandidateSignalsV1,
   isCandidateV1,
   isMissedPathV1,
   isReencounterFeedbackV1,
   isReencounterRecordV1,
   isSearchContextV1,
+  isSessionLifecycleStatusV2,
   isSessionOwnerV1,
   isSettingsV1
 } from "../shared/types.js";
@@ -92,20 +94,40 @@ function isSessionCandidate(value, sessionId) {
 
 function isSessionState(value) {
   const hasOwner = isRecord(value) && Object.hasOwn(value, "owner");
+  const hasStatus = isRecord(value) && Object.hasOwn(value, "status");
+  const hasLeaseId =
+    isRecord(value) && Object.hasOwn(value, "finalizationLeaseId");
+  const hasLeaseUntil = isRecord(value) && Object.hasOwn(value, "leaseUntil");
+  const expectedKeys = ["sessionId"];
+  if (hasOwner) {
+    expectedKeys.push("owner");
+  }
+  expectedKeys.push("context", "candidates", "updatedAt");
+  if (hasStatus) {
+    expectedKeys.push("status");
+  }
+  if (hasLeaseId) {
+    expectedKeys.push("finalizationLeaseId");
+  }
+  if (hasLeaseUntil) {
+    expectedKeys.push("leaseUntil");
+  }
   if (
-    !hasExactKeys(
-      value,
-      hasOwner
-        ? ["sessionId", "owner", "context", "candidates", "updatedAt"]
-        : ["sessionId", "context", "candidates", "updatedAt"]
-    ) ||
+    !hasExactKeys(value, expectedKeys) ||
     !isNonEmptyString(value.sessionId) ||
     (hasOwner &&
       (!isSessionOwnerV1(value.owner) ||
         value.owner.sessionId !== value.sessionId)) ||
     !isSearchContextV1(value.context) ||
     !Array.isArray(value.candidates) ||
-    !isFiniteNonNegativeNumber(value.updatedAt)
+    !isFiniteNonNegativeNumber(value.updatedAt) ||
+    (hasStatus && !isSessionLifecycleStatusV2(value.status)) ||
+    hasLeaseId !== hasLeaseUntil ||
+    (hasLeaseId &&
+      (sessionLifecycleStatus(value) !==
+        SESSION_LIFECYCLE_STATUSES.FINALIZING ||
+        !isNonEmptyString(value.finalizationLeaseId) ||
+        !isFiniteNonNegativeNumber(value.leaseUntil)))
   ) {
     return false;
   }
@@ -195,6 +217,39 @@ function cloneJson(value) {
   }
 }
 
+function sessionLifecycleStatus(session) {
+  return session.status ?? SESSION_LIFECYCLE_STATUSES.OPEN;
+}
+
+function normalizeSessionState(
+  session,
+  fallbackStatus = SESSION_LIFECYCLE_STATUSES.OPEN
+) {
+  return {
+    ...cloneJson(session),
+    status: session.status ?? fallbackStatus
+  };
+}
+
+function withoutSessionLease(session) {
+  const {
+    finalizationLeaseId: _finalizationLeaseId,
+    leaseUntil: _leaseUntil,
+    ...rest
+  } = session;
+  return rest;
+}
+
+function assertOpenSession(session, action) {
+  const status = sessionLifecycleStatus(session);
+  if (status !== SESSION_LIFECYCLE_STATUSES.OPEN) {
+    throw new RepositoryDataError(
+      `Cannot ${action} session in ${status} state: ${session.sessionId}`,
+      "SESSION_NOT_OPEN"
+    );
+  }
+}
+
 function isSameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -268,7 +323,7 @@ export function createRepository(adapter) {
 
   let compatibilityOperation = null;
 
-  function validateMigratableRecord(entry) {
+  function validateMigratableRecord(entry, finalizedSessionIds) {
     if (
       !hasExactKeys(entry, ["key", "value"]) ||
       !isNonEmptyString(entry.key) ||
@@ -335,10 +390,19 @@ export function createRepository(adapter) {
       );
     }
 
+    const migratedData = record.kind === REPOSITORY_KINDS.SESSION
+      ? {
+          ...cloneJson(record.data),
+          status: finalizedSessionIds.has(record.id)
+            ? SESSION_LIFECYCLE_STATUSES.FINALIZED
+            : SESSION_LIFECYCLE_STATUSES.OPEN
+        }
+      : cloneJson(record.data);
     return {
       key: entry.key,
       value: {
         ...cloneJson(record),
+        data: migratedData,
         schemaVersion: SCHEMA_VERSION
       }
     };
@@ -387,9 +451,20 @@ export function createRepository(adapter) {
       );
     }
 
-    const migratedRecords = entries
-      .filter((entry) => entry.key !== REPOSITORY_SCHEMA_KEY)
-      .map(validateMigratableRecord);
+    const legacyRecords = entries.filter(
+      (entry) => entry.key !== REPOSITORY_SCHEMA_KEY
+    );
+    const finalizedSessionIds = new Set(
+      legacyRecords
+        .filter(
+          (entry) =>
+            entry?.value?.kind === REPOSITORY_KINDS.SESSION_FINALIZATION
+        )
+        .map((entry) => entry.value.id)
+    );
+    const migratedRecords = legacyRecords.map((entry) =>
+      validateMigratableRecord(entry, finalizedSessionIds)
+    );
     await adapter.commit({
       puts: [
         ...migratedRecords,
@@ -589,6 +664,264 @@ export function createRepository(adapter) {
     return null;
   }
 
+  async function transitionSessionLifecycle(
+    sessionId,
+    targetStatus,
+    updatedAt,
+    owner,
+    allowedStatuses
+  ) {
+    if (
+      !isNonEmptyString(sessionId) ||
+      !isSessionLifecycleStatusV2(targetStatus) ||
+      !isFiniteNonNegativeNumber(updatedAt)
+    ) {
+      throw new RepositoryDataError("Invalid Session lifecycle transition.");
+    }
+
+    await ensureCompatibleVersion();
+    const ownedSessionId = sessionRecordId(sessionId, owner);
+    const sessionKey = recordKey(REPOSITORY_KINDS.SESSION, ownedSessionId);
+    const storedSession = await adapter.get(sessionKey);
+    if (storedSession === undefined) {
+      throw new RepositoryDataError(`Session not found: ${sessionId}`);
+    }
+    const session = normalizeSessionState(
+      validateStoredRecord(
+        storedSession,
+        REPOSITORY_KINDS.SESSION,
+        ownedSessionId
+      )
+    );
+    if (!isSessionState(session)) {
+      throw new RepositoryDataError("Stored session data is invalid.");
+    }
+
+    const currentStatus = sessionLifecycleStatus(session);
+    if (currentStatus === targetStatus) {
+      return {
+        sessionId,
+        status: currentStatus,
+        updatedAt: session.updatedAt,
+        changed: false
+      };
+    }
+    if (!allowedStatuses.includes(currentStatus)) {
+      throw new RepositoryDataError(
+        `Cannot transition Session from ${currentStatus} to ${targetStatus}: ${sessionId}`,
+        "SESSION_LIFECYCLE_CONFLICT"
+      );
+    }
+
+    const nextSession = {
+      ...withoutSessionLease(session),
+      status: targetStatus,
+      updatedAt: Math.max(session.updatedAt, updatedAt)
+    };
+    const deletes = [];
+    if (targetStatus === SESSION_LIFECYCLE_STATUSES.ABANDONED) {
+      const activeContextId = activeContextRecordId(owner);
+      const activeContextKey = recordKey(
+        REPOSITORY_KINDS.ACTIVE_CONTEXT,
+        activeContextId
+      );
+      const storedActiveContext = await adapter.get(activeContextKey);
+      if (storedActiveContext !== undefined) {
+        const activeContext = validateStoredRecord(
+          storedActiveContext,
+          REPOSITORY_KINDS.ACTIVE_CONTEXT,
+          activeContextId
+        );
+        if (!isActiveContextState(activeContext)) {
+          throw new RepositoryDataError("Stored active-context data is invalid.");
+        }
+        if (activeContext.sessionId === sessionId) {
+          deletes.push(activeContextKey);
+        }
+      }
+    }
+
+    await adapter.commit({
+      puts: [
+        {
+          key: sessionKey,
+          value: createStoredRecord(
+            REPOSITORY_KINDS.SESSION,
+            ownedSessionId,
+            nextSession
+          )
+        }
+      ],
+      ...(deletes.length > 0 ? { deletes } : {})
+    });
+    return {
+      sessionId,
+      status: targetStatus,
+      updatedAt: nextSession.updatedAt,
+      changed: true
+    };
+  }
+
+  async function claimSessionFinalizationLease(claim, owner) {
+    if (
+      !hasExactKeys(claim, [
+        "sessionId",
+        "finalizationLeaseId",
+        "claimedAt",
+        "leaseUntil"
+      ]) ||
+      !isNonEmptyString(claim.sessionId) ||
+      !isNonEmptyString(claim.finalizationLeaseId) ||
+      !isFiniteNonNegativeNumber(claim.claimedAt) ||
+      !isFiniteNonNegativeNumber(claim.leaseUntil) ||
+      claim.leaseUntil <= claim.claimedAt
+    ) {
+      throw new RepositoryDataError("Invalid Session finalization lease.");
+    }
+
+    await ensureCompatibleVersion();
+    const ownedSessionId = sessionRecordId(claim.sessionId, owner);
+    const sessionKey = recordKey(REPOSITORY_KINDS.SESSION, ownedSessionId);
+    const storedSession = await adapter.get(sessionKey);
+    if (storedSession === undefined) {
+      throw new RepositoryDataError(`Session not found: ${claim.sessionId}`);
+    }
+    const session = normalizeSessionState(
+      validateStoredRecord(
+        storedSession,
+        REPOSITORY_KINDS.SESSION,
+        ownedSessionId
+      )
+    );
+    if (!isSessionState(session)) {
+      throw new RepositoryDataError("Stored session data is invalid.");
+    }
+
+    const status = sessionLifecycleStatus(session);
+    if (
+      status === SESSION_LIFECYCLE_STATUSES.FINALIZED ||
+      status === SESSION_LIFECYCLE_STATUSES.ABANDONED
+    ) {
+      return {
+        sessionId: claim.sessionId,
+        acquired: false,
+        status,
+        leaseUntil: null
+      };
+    }
+    if (
+      status === SESSION_LIFECYCLE_STATUSES.FINALIZING &&
+      session.finalizationLeaseId === claim.finalizationLeaseId
+    ) {
+      return {
+        sessionId: claim.sessionId,
+        acquired: true,
+        status,
+        leaseUntil: session.leaseUntil,
+        changed: false
+      };
+    }
+    if (
+      status === SESSION_LIFECYCLE_STATUSES.FINALIZING &&
+      isFiniteNonNegativeNumber(session.leaseUntil) &&
+      session.leaseUntil > claim.claimedAt
+    ) {
+      return {
+        sessionId: claim.sessionId,
+        acquired: false,
+        status,
+        leaseUntil: session.leaseUntil
+      };
+    }
+
+    const leasedSession = {
+      ...withoutSessionLease(session),
+      status: SESSION_LIFECYCLE_STATUSES.FINALIZING,
+      finalizationLeaseId: claim.finalizationLeaseId,
+      leaseUntil: claim.leaseUntil,
+      updatedAt: Math.max(session.updatedAt, claim.claimedAt)
+    };
+    await adapter.commit({
+      puts: [
+        {
+          key: sessionKey,
+          value: createStoredRecord(
+            REPOSITORY_KINDS.SESSION,
+            ownedSessionId,
+            leasedSession
+          )
+        }
+      ]
+    });
+    return {
+      sessionId: claim.sessionId,
+      acquired: true,
+      status: leasedSession.status,
+      leaseUntil: leasedSession.leaseUntil,
+      changed: true
+    };
+  }
+
+  async function releaseSessionFinalizationLease(
+    sessionId,
+    finalizationLeaseId,
+    updatedAt,
+    owner
+  ) {
+    if (
+      !isNonEmptyString(sessionId) ||
+      !isNonEmptyString(finalizationLeaseId) ||
+      !isFiniteNonNegativeNumber(updatedAt)
+    ) {
+      throw new RepositoryDataError("Invalid Session lease release.");
+    }
+    await ensureCompatibleVersion();
+    const ownedSessionId = sessionRecordId(sessionId, owner);
+    const sessionKey = recordKey(REPOSITORY_KINDS.SESSION, ownedSessionId);
+    const storedSession = await adapter.get(sessionKey);
+    if (storedSession === undefined) {
+      return false;
+    }
+    const session = normalizeSessionState(
+      validateStoredRecord(
+        storedSession,
+        REPOSITORY_KINDS.SESSION,
+        ownedSessionId
+      )
+    );
+    if (!isSessionState(session)) {
+      throw new RepositoryDataError("Stored session data is invalid.");
+    }
+    if (sessionLifecycleStatus(session) === SESSION_LIFECYCLE_STATUSES.OPEN) {
+      return false;
+    }
+    if (
+      sessionLifecycleStatus(session) !==
+        SESSION_LIFECYCLE_STATUSES.FINALIZING ||
+      session.finalizationLeaseId !== finalizationLeaseId
+    ) {
+      return false;
+    }
+    const reopenedSession = {
+      ...withoutSessionLease(session),
+      status: SESSION_LIFECYCLE_STATUSES.OPEN,
+      updatedAt: Math.max(session.updatedAt, updatedAt)
+    };
+    await adapter.commit({
+      puts: [
+        {
+          key: sessionKey,
+          value: createStoredRecord(
+            REPOSITORY_KINDS.SESSION,
+            ownedSessionId,
+            reopenedSession
+          )
+        }
+      ]
+    });
+    return true;
+  }
+
   return Object.freeze({
     async getSchemaVersion() {
       await ensureCompatibleVersion();
@@ -599,10 +932,13 @@ export function createRepository(adapter) {
       const owner = isRecord(session) && Object.hasOwn(session, "owner")
         ? session.owner
         : undefined;
+      const normalizedSession = isSessionState(session)
+        ? normalizeSessionState(session)
+        : session;
       return saveRecord(
         REPOSITORY_KINDS.SESSION,
         sessionRecordId(session?.sessionId, owner),
-        session,
+        normalizedSession,
         isSessionState
       );
     },
@@ -678,6 +1014,8 @@ export function createRepository(adapter) {
 
       const storedSession = await adapter.get(sessionKey);
       let session;
+      let normalizesLegacyStatus = false;
+      let resumesFinalizingSession = false;
       if (storedSession === undefined) {
         session = {
           sessionId: discovery.sessionId,
@@ -686,7 +1024,8 @@ export function createRepository(adapter) {
             : { owner: cloneJson(owner) }),
           context: cloneJson(discovery.context),
           candidates: [],
-          updatedAt: discovery.discoveredAt
+          updatedAt: discovery.discoveredAt,
+          status: SESSION_LIFECYCLE_STATUSES.OPEN
         };
       } else {
         session = validateStoredRecord(
@@ -697,12 +1036,23 @@ export function createRepository(adapter) {
         if (!isSessionState(session)) {
           throw new RepositoryDataError("Stored session data is invalid.");
         }
+        const storedStatus = sessionLifecycleStatus(session);
+        if (storedStatus === SESSION_LIFECYCLE_STATUSES.FINALIZING) {
+          resumesFinalizingSession = true;
+          session = {
+            ...withoutSessionLease(session),
+            status: SESSION_LIFECYCLE_STATUSES.OPEN
+          };
+        } else {
+          assertOpenSession(session, "add Candidates to");
+        }
         if (!isSameJson(session.context, discovery.context)) {
           throw new RepositoryDataError(
             `SearchContext conflicts with session: ${discovery.sessionId}`
           );
         }
-        session = cloneJson(session);
+        normalizesLegacyStatus = !Object.hasOwn(session, "status");
+        session = normalizeSessionState(session);
       }
 
       const candidatesById = new Map(
@@ -826,7 +1176,12 @@ export function createRepository(adapter) {
       }
 
       const puts = [];
-      if (acceptedCandidateIds.length > 0) {
+      if (
+        acceptedCandidateIds.length > 0 ||
+        normalizesLegacyStatus ||
+        resumesFinalizingSession ||
+        discovery.discoveredAt > session.updatedAt
+      ) {
         session.updatedAt = Math.max(
           session.updatedAt,
           discovery.discoveredAt
@@ -876,15 +1231,78 @@ export function createRepository(adapter) {
         updatedAt: session.updatedAt
       };
     },
-    getSession(sessionId, owner) {
-      return getRecord(
+    async getSession(sessionId, owner) {
+      const session = await getRecord(
         REPOSITORY_KINDS.SESSION,
         sessionRecordId(sessionId, owner),
         isSessionState
       );
+      if (session === null || Object.hasOwn(session, "status")) {
+        return session === null ? null : normalizeSessionState(session);
+      }
+      const finalization = await getRecord(
+        REPOSITORY_KINDS.SESSION_FINALIZATION,
+        sessionRecordId(sessionId, owner),
+        isSessionFinalization
+      );
+      return normalizeSessionState(
+        session,
+        finalization === null
+          ? SESSION_LIFECYCLE_STATUSES.OPEN
+          : SESSION_LIFECYCLE_STATUSES.FINALIZED
+      );
     },
-    listSessions() {
-      return listRecords(REPOSITORY_KINDS.SESSION, isSessionState);
+    async listSessions() {
+      const sessions = await listRecords(
+        REPOSITORY_KINDS.SESSION,
+        isSessionState
+      );
+      const finalizedSessionIds = new Set(
+        (await listRecords(
+          REPOSITORY_KINDS.SESSION_FINALIZATION,
+          isSessionFinalization
+        )).map((finalization) =>
+          sessionRecordId(finalization.sessionId, finalization.owner)
+        )
+      );
+      return sessions.map((session) =>
+        normalizeSessionState(
+          session,
+          finalizedSessionIds.has(
+            sessionRecordId(session.sessionId, session.owner)
+          )
+            ? SESSION_LIFECYCLE_STATUSES.FINALIZED
+            : SESSION_LIFECYCLE_STATUSES.OPEN
+        )
+      );
+    },
+    claimSessionFinalizationLease(claim, owner) {
+      return claimSessionFinalizationLease(claim, owner);
+    },
+    releaseSessionFinalizationLease(
+      sessionId,
+      finalizationLeaseId,
+      updatedAt,
+      owner
+    ) {
+      return releaseSessionFinalizationLease(
+        sessionId,
+        finalizationLeaseId,
+        updatedAt,
+        owner
+      );
+    },
+    markSessionAbandoned(sessionId, updatedAt, owner) {
+      return transitionSessionLifecycle(
+        sessionId,
+        SESSION_LIFECYCLE_STATUSES.ABANDONED,
+        updatedAt,
+        owner,
+        [
+          SESSION_LIFECYCLE_STATUSES.OPEN,
+          SESSION_LIFECYCLE_STATUSES.FINALIZING
+        ]
+      );
     },
     async getActiveContext() {
       const key = recordKey(
@@ -934,15 +1352,16 @@ export function createRepository(adapter) {
         );
       }
 
-      const session = validateStoredRecord(
-        storedSession,
-        REPOSITORY_KINDS.SESSION,
-        ownedSessionId
+      const session = normalizeSessionState(
+        validateStoredRecord(
+          storedSession,
+          REPOSITORY_KINDS.SESSION,
+          ownedSessionId
+        )
       );
       if (!isSessionState(session)) {
         throw new RepositoryDataError("Stored session data is invalid.");
       }
-
       const finalizationKey = recordKey(
         REPOSITORY_KINDS.SESSION_FINALIZATION,
         ownedSessionId
@@ -963,6 +1382,7 @@ export function createRepository(adapter) {
           `Cannot update finalized session: ${signals.sessionId}`
         );
       }
+      assertOpenSession(session, "update signals for");
 
       const candidateIndex = session.candidates.findIndex(
         (entry) => entry.candidate.id === signals.candidateId
@@ -1043,15 +1463,16 @@ export function createRepository(adapter) {
         throw new RepositoryDataError(`Session not found: ${sessionId}`);
       }
 
-      const session = validateStoredRecord(
-        storedSession,
-        REPOSITORY_KINDS.SESSION,
-        ownedSessionId
+      const session = normalizeSessionState(
+        validateStoredRecord(
+          storedSession,
+          REPOSITORY_KINDS.SESSION,
+          ownedSessionId
+        )
       );
       if (!isSessionState(session)) {
         throw new RepositoryDataError("Stored session data is invalid.");
       }
-
       const candidateIndex = session.candidates.findIndex(
         (entry) => entry.candidate.id === candidateId
       );
@@ -1084,6 +1505,7 @@ export function createRepository(adapter) {
           `Cannot update finalized session: ${sessionId}`
         );
       }
+      assertOpenSession(session, "mark a Candidate chosen in");
 
       const nextSession = cloneJson(session);
       nextSession.candidates[candidateIndex].signals.clicked = true;
@@ -1143,19 +1565,29 @@ export function createRepository(adapter) {
     },
 
     async finalizeSessionAtomically(finalization, owner) {
+      const hasLeaseId =
+        isRecord(finalization) &&
+        Object.hasOwn(finalization, "finalizationLeaseId");
       if (
-        !hasExactKeys(finalization, [
-          "sessionId",
-          "finalizedAt",
-          "chosen",
-          "missedPaths"
-        ]) ||
+        !hasExactKeys(
+          finalization,
+          hasLeaseId
+            ? [
+                "sessionId",
+                "finalizedAt",
+                "chosen",
+                "missedPaths",
+                "finalizationLeaseId"
+              ]
+            : ["sessionId", "finalizedAt", "chosen", "missedPaths"]
+        ) ||
         !isNonEmptyString(finalization.sessionId) ||
         !isFiniteNonNegativeNumber(finalization.finalizedAt) ||
         !Array.isArray(finalization.chosen) ||
         !finalization.chosen.every(isChosen) ||
         !Array.isArray(finalization.missedPaths) ||
-        !finalization.missedPaths.every(isMissedPathV1)
+        !finalization.missedPaths.every(isMissedPathV1) ||
+        (hasLeaseId && !isNonEmptyString(finalization.finalizationLeaseId))
       ) {
         throw new RepositoryDataError("Invalid atomic session finalization data.");
       }
@@ -1191,6 +1623,10 @@ export function createRepository(adapter) {
         owner
       );
       const ownedActiveContextId = activeContextRecordId(owner);
+      const sessionKey = recordKey(
+        REPOSITORY_KINDS.SESSION,
+        ownedSessionId
+      );
       const markerKey = recordKey(
         REPOSITORY_KINDS.SESSION_FINALIZATION,
         ownedSessionId
@@ -1199,6 +1635,48 @@ export function createRepository(adapter) {
         REPOSITORY_KINDS.ACTIVE_CONTEXT,
         ownedActiveContextId
       );
+      const storedSession = await adapter.get(sessionKey);
+      if (storedSession === undefined) {
+        throw new RepositoryDataError(
+          `Session not found: ${finalization.sessionId}`
+        );
+      }
+      const session = normalizeSessionState(
+        validateStoredRecord(
+          storedSession,
+          REPOSITORY_KINDS.SESSION,
+          ownedSessionId
+        )
+      );
+      if (!isSessionState(session)) {
+        throw new RepositoryDataError("Stored session data is invalid.");
+      }
+      const sessionStatus = sessionLifecycleStatus(session);
+      if (
+        sessionStatus === SESSION_LIFECYCLE_STATUSES.FINALIZING &&
+        Object.hasOwn(session, "finalizationLeaseId") &&
+        finalization.finalizationLeaseId !== session.finalizationLeaseId
+      ) {
+        throw new RepositoryDataError(
+          `Session finalization lease was lost: ${finalization.sessionId}`,
+          "SESSION_FINALIZATION_LEASE_LOST"
+        );
+      }
+      if (
+        sessionStatus !== SESSION_LIFECYCLE_STATUSES.OPEN &&
+        sessionStatus !== SESSION_LIFECYCLE_STATUSES.FINALIZING &&
+        sessionStatus !== SESSION_LIFECYCLE_STATUSES.FINALIZED
+      ) {
+        throw new RepositoryDataError(
+          `Cannot finalize Session in ${sessionStatus} state: ${finalization.sessionId}`,
+          "SESSION_LIFECYCLE_CONFLICT"
+        );
+      }
+      const finalizedSession = {
+        ...withoutSessionLease(session),
+        status: SESSION_LIFECYCLE_STATUSES.FINALIZED,
+        updatedAt: Math.max(session.updatedAt, finalization.finalizedAt)
+      };
       const storedActiveContext = await adapter.get(activeContextKey);
       let clearsActiveContext = false;
       if (storedActiveContext !== undefined) {
@@ -1225,8 +1703,27 @@ export function createRepository(adapter) {
             "Stored session-finalization data is invalid."
           );
         }
-        if (clearsActiveContext) {
-          await adapter.commit({ deletes: [activeContextKey] });
+        if (
+          sessionStatus !== SESSION_LIFECYCLE_STATUSES.FINALIZED ||
+          clearsActiveContext
+        ) {
+          await adapter.commit({
+            ...(sessionStatus !== SESSION_LIFECYCLE_STATUSES.FINALIZED
+              ? {
+                  puts: [
+                    {
+                      key: sessionKey,
+                      value: createStoredRecord(
+                        REPOSITORY_KINDS.SESSION,
+                        ownedSessionId,
+                        finalizedSession
+                      )
+                    }
+                  ]
+                }
+              : {}),
+            ...(clearsActiveContext ? { deletes: [activeContextKey] } : {})
+          });
         }
         return { created: false, finalization: cloneJson(marker) };
       }
@@ -1262,6 +1759,14 @@ export function createRepository(adapter) {
         }
       }
       puts.push({
+        key: sessionKey,
+        value: createStoredRecord(
+          REPOSITORY_KINDS.SESSION,
+          ownedSessionId,
+          finalizedSession
+        )
+      });
+      puts.push({
         key: markerKey,
         value: createStoredRecord(
           REPOSITORY_KINDS.SESSION_FINALIZATION,
@@ -1275,6 +1780,97 @@ export function createRepository(adapter) {
         ...(clearsActiveContext ? { deletes: [activeContextKey] } : {})
       });
       return { created: true, finalization: cloneJson(marker) };
+    },
+
+    async abandonSessionAtomically(abandonment, owner) {
+      if (
+        !hasExactKeys(abandonment, [
+          "sessionId",
+          "abandonedAt",
+          "finalizationLeaseId"
+        ]) ||
+        !isNonEmptyString(abandonment.sessionId) ||
+        !isFiniteNonNegativeNumber(abandonment.abandonedAt) ||
+        !isNonEmptyString(abandonment.finalizationLeaseId)
+      ) {
+        throw new RepositoryDataError("Invalid atomic Session abandonment.");
+      }
+
+      await ensureCompatibleVersion();
+      const ownedSessionId = sessionRecordId(abandonment.sessionId, owner);
+      const ownedActiveContextId = activeContextRecordId(owner);
+      const sessionKey = recordKey(REPOSITORY_KINDS.SESSION, ownedSessionId);
+      const activeContextKey = recordKey(
+        REPOSITORY_KINDS.ACTIVE_CONTEXT,
+        ownedActiveContextId
+      );
+      const storedSession = await adapter.get(sessionKey);
+      if (storedSession === undefined) {
+        throw new RepositoryDataError(
+          `Session not found: ${abandonment.sessionId}`
+        );
+      }
+      const session = normalizeSessionState(
+        validateStoredRecord(
+          storedSession,
+          REPOSITORY_KINDS.SESSION,
+          ownedSessionId
+        )
+      );
+      if (!isSessionState(session)) {
+        throw new RepositoryDataError("Stored session data is invalid.");
+      }
+      if (
+        sessionLifecycleStatus(session) ===
+        SESSION_LIFECYCLE_STATUSES.ABANDONED
+      ) {
+        return { changed: false, status: session.status };
+      }
+      if (
+        sessionLifecycleStatus(session) !==
+          SESSION_LIFECYCLE_STATUSES.FINALIZING ||
+        session.finalizationLeaseId !== abandonment.finalizationLeaseId
+      ) {
+        throw new RepositoryDataError(
+          `Session abandonment lease was lost: ${abandonment.sessionId}`,
+          "SESSION_FINALIZATION_LEASE_LOST"
+        );
+      }
+
+      const abandonedSession = {
+        ...withoutSessionLease(session),
+        status: SESSION_LIFECYCLE_STATUSES.ABANDONED,
+        updatedAt: Math.max(session.updatedAt, abandonment.abandonedAt)
+      };
+      const deletes = [];
+      const storedActiveContext = await adapter.get(activeContextKey);
+      if (storedActiveContext !== undefined) {
+        const activeContext = validateStoredRecord(
+          storedActiveContext,
+          REPOSITORY_KINDS.ACTIVE_CONTEXT,
+          ownedActiveContextId
+        );
+        if (!isActiveContextState(activeContext)) {
+          throw new RepositoryDataError("Stored active-context data is invalid.");
+        }
+        if (activeContext.sessionId === abandonment.sessionId) {
+          deletes.push(activeContextKey);
+        }
+      }
+      await adapter.commit({
+        puts: [
+          {
+            key: sessionKey,
+            value: createStoredRecord(
+              REPOSITORY_KINDS.SESSION,
+              ownedSessionId,
+              abandonedSession
+            )
+          }
+        ],
+        ...(deletes.length > 0 ? { deletes } : {})
+      });
+      return { changed: true, status: abandonedSession.status };
     },
 
     saveChosen(chosen) {

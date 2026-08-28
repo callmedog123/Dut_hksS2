@@ -56,6 +56,35 @@ class EventTargetHarness {
   }
 }
 
+function createTimeoutHarness() {
+  let now = 0;
+  let sequence = 0;
+  const tasks = new Map();
+  return {
+    setTimeout(callback, delay) {
+      const id = ++sequence;
+      tasks.set(id, { callback, dueAt: now + delay });
+      return id;
+    },
+    clearTimeout(id) {
+      tasks.delete(id);
+    },
+    advanceBy(elapsedMs) {
+      now += elapsedMs;
+      const due = [...tasks.entries()]
+        .filter(([, task]) => task.dueAt <= now)
+        .sort((left, right) => left[1].dueAt - right[1].dueAt);
+      for (const [id, task] of due) {
+        tasks.delete(id);
+        task.callback();
+      }
+    },
+    get pendingCount() {
+      return tasks.size;
+    }
+  };
+}
+
 function createBackend(storageAdapter) {
   const repository = createRepository(storageAdapter);
   const sessionManager = createSessionManager(repository);
@@ -96,7 +125,8 @@ function createBackend(storageAdapter) {
 function createRuntimeHarness({
   storageAdapter = createTransactionalMemoryStorageAdapter(),
   candidates = [createCandidate(1), createCandidate(2)],
-  statuses = []
+  statuses = [],
+  timers = null
 } = {}) {
   const fixture = createBilibiliDocumentFixture({
     url: FIRST_QUERY_URL,
@@ -120,6 +150,12 @@ function createRuntimeHarness({
     performanceNow: () => performanceTime,
     MutationObserver: mutation.MutationObserver,
     IntersectionObserver: intersection.IntersectionObserver,
+    ...(timers === null
+      ? {}
+      : {
+          setTimeout: timers.setTimeout,
+          clearTimeout: timers.clearTimeout
+        }),
     sessionIdFactory: () => `bilibili-session-${++sessionSequence}`,
     onStatus(status) {
       statuses.push(status);
@@ -227,15 +263,103 @@ test("collects initial/dynamic Candidates, absolute signals, and every supported
   assert.equal(dynamicSignals.returnCount, 2);
   assert.equal(dynamicSignals.clicked, false);
 
-  const messagesBeforeCleanup = harness.backend().messages.length;
   harness.runtime.cleanup();
+  await harness.runtime.whenIdle();
+  const messagesAfterCleanup = harness.backend().messages.length;
   harness.fixture.addCandidate(createCandidate(6));
   harness.mutation.notifyAll();
-  assert.equal(harness.backend().messages.length, messagesBeforeCleanup);
+  assert.equal(harness.backend().messages.length, messagesAfterCleanup);
   assert.equal(harness.fixture.document.listenerCount("click"), 0);
   assert.equal(harness.fixture.document.listenerCount("auxclick"), 0);
   assert.equal(harness.fixture.document.listenerCount("visibilitychange"), 0);
   assert.equal(harness.mutation.instances[0].disconnectCount, 1);
+});
+
+test("checkpoints changed absolute signals by the configured maximum delay only", async () => {
+  const timers = createTimeoutHarness();
+  const harness = createRuntimeHarness({
+    candidates: [createCandidate(1)],
+    timers
+  });
+  await harness.runtime.start();
+  await harness.runtime.whenIdle();
+
+  harness.setPerformanceTime(1_999);
+  timers.advanceBy(1_999);
+  await harness.runtime.whenIdle();
+  assert.equal(
+    harness.backend().messages.filter(
+      (message) => message.type === MESSAGE_TYPES.SIGNALS_UPDATED
+    ).length,
+    0
+  );
+
+  harness.setPerformanceTime(2_000);
+  timers.advanceBy(1);
+  await harness.runtime.whenIdle();
+  const firstCheckpointCount = harness.backend().messages.filter(
+    (message) => message.type === MESSAGE_TYPES.SIGNALS_UPDATED
+  ).length;
+  assert.equal(firstCheckpointCount, 1);
+  assert.equal(
+    harness.backend().messages.find(
+      (message) => message.type === MESSAGE_TYPES.SIGNALS_UPDATED
+    ).payload.signals.visibleMs,
+    2_000
+  );
+
+  timers.advanceBy(2_000);
+  await harness.runtime.whenIdle();
+  assert.equal(
+    harness.backend().messages.filter(
+      (message) => message.type === MESSAGE_TYPES.SIGNALS_UPDATED
+    ).length,
+    firstCheckpointCount
+  );
+
+  harness.setPerformanceTime(2_500);
+  harness.runtime.cleanup();
+  await harness.runtime.whenIdle();
+  assert.equal(timers.pendingCount, 0);
+  assert.equal(
+    harness.backend().messages.filter(
+      (message) => message.type === MESSAGE_TYPES.SIGNALS_UPDATED
+    ).at(-1).payload.signals.visibleMs,
+    2_500
+  );
+});
+
+test("retries a failed checkpoint and keeps the newest absolute snapshot", async () => {
+  const timers = createTimeoutHarness();
+  const harness = createRuntimeHarness({
+    candidates: [createCandidate(1)],
+    timers
+  });
+  await harness.runtime.start();
+  await harness.runtime.whenIdle();
+
+  harness.storageAdapter.failNextCommit(
+    new Error("simulated checkpoint write failure")
+  );
+  harness.setPerformanceTime(2_000);
+  timers.advanceBy(2_000);
+  await harness.runtime.whenIdle();
+  assert.equal(
+    (await harness.backend().repository.getSession("bilibili-session-1"))
+      .candidates[0].signals.visibleMs,
+    0
+  );
+
+  harness.setPerformanceTime(4_000);
+  timers.advanceBy(2_000);
+  await harness.runtime.whenIdle();
+  assert.equal(
+    (await harness.backend().repository.getSession("bilibili-session-1"))
+      .candidates[0].signals.visibleMs,
+    4_000
+  );
+  harness.runtime.cleanup();
+  await harness.runtime.whenIdle();
 });
 
 test("finalizes the old Session before binding a new SPA query and supports repeated video IDs", async () => {
