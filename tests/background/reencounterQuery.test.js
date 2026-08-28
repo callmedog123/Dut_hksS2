@@ -7,7 +7,10 @@ import {
   createReencounterQueryUseCase
 } from "../../background/reencounterQuery.js";
 import { REENCOUNTER_SCORING_CONFIG } from "../../background/scoringConfig.js";
-import { createRepository } from "../../storage/repository.js";
+import {
+  createRepository,
+  createSessionOwnerKey
+} from "../../storage/repository.js";
 import { createTransactionalMemoryStorageAdapter } from "../storage/fixtures/memoryStorageAdapter.js";
 
 const NOW = 10_000_000_000;
@@ -87,6 +90,101 @@ test("reads Repository state and returns ranked candidates without writing", asy
   assert.equal(result[0].missedPath.id, "missed-1");
   assert.equal(result[0].score >= REENCOUNTER_SCORING_CONFIG.threshold, true);
   assert.equal(adapter.commitCount, commitsBeforeQuery);
+});
+
+test("loads historical and active-tab tag profiles without crossing tab owners", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  const historicalOwner = {
+    tabId: 3,
+    documentId: "historical-document",
+    frameId: 0,
+    sessionId: "session-1"
+  };
+  const currentOwner = {
+    tabId: 7,
+    documentId: "current-document",
+    frameId: 0,
+    sessionId: "current-session"
+  };
+  const missedPathId = `${encodeURIComponent(
+    createSessionOwnerKey(historicalOwner)
+  )}:${encodeURIComponent("candidate-1")}`;
+  await repository.saveMissedPath({
+    ...createMissedPath(),
+    id: missedPathId,
+    candidate: {
+      ...createMissedPath().candidate,
+      source: "bilibili-search",
+      contentType: "VIDEO",
+      layoutType: "GRID"
+    },
+    createdAt: NOW
+  });
+  await repository.saveCandidateTagProfile(
+    {
+      candidateId: "candidate-1",
+      sessionId: "session-1",
+      nativeTags: [],
+      normalizedTags: ["robot"]
+    },
+    historicalOwner
+  );
+  const currentContext = createContext();
+  await repository.mergeDiscoveredCandidates(
+    {
+      sessionId: "current-session",
+      context: currentContext,
+      candidates: [
+        {
+          id: "current-candidate",
+          url: "https://example.com/current",
+          title: "Current result",
+          source: "local-demo",
+          rank: 1,
+          sessionId: "current-session"
+        }
+      ],
+      discoveredAt: NOW
+    },
+    currentOwner
+  );
+  await repository.saveContextTagProfile(
+    {
+      sessionId: "current-session",
+      normalizedTags: ["robot"]
+    },
+    currentOwner
+  );
+  await repository.saveSessionSelectedTagProfile(
+    {
+      sessionId: "current-session",
+      selectedCandidateCount: 1,
+      tags: [{ tag: "robot", candidateCount: 1, weight: 1 }]
+    },
+    currentOwner
+  );
+
+  const useCase = createReencounterQueryUseCase(repository);
+  const tagged = await useCase.execute(
+    { context: currentContext, limit: 3 },
+    currentOwner.tabId
+  );
+  const otherTab = await useCase.execute(
+    { context: currentContext, limit: 3 },
+    8
+  );
+
+  assert.equal(tagged.length, 1);
+  assert.equal(Math.abs(tagged[0].score - 0.95) < Number.EPSILON, true);
+  assert.equal(tagged[0].missedPath.candidate.url, createMissedPath().candidate.url);
+  assert.equal(tagged[0].missedPath.candidate.source, "bilibili-search");
+  assert.equal(tagged[0].missedPath.candidate.contentType, "VIDEO");
+  assert.equal(tagged[0].missedPath.candidate.layoutType, "GRID");
+  assert.equal(tagged[0].reasons[1].contribution, 0.15);
+  assert.match(tagged[0].reasons[1].label, /已选择偏好/);
+  assert.equal(otherTab[0].score, 0.8);
+  assert.equal(otherTab[0].reasons[1].contribution, 0);
 });
 
 test("uses LATER feedbackAt for cooldown and NOT_RELEVANT as a penalty", async () => {

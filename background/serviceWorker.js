@@ -154,6 +154,15 @@ const messageRouter = createMessageRouter({
   getSessionFinalization(sessionId, owner) {
     return getRepository().getSessionFinalization(sessionId, owner);
   },
+  getContextTagProfile(sessionId, owner) {
+    return getRepository().getContextTagProfile(sessionId, owner);
+  },
+  getSessionSelectedTagProfile(sessionId, owner) {
+    return getRepository().getSessionSelectedTagProfile(sessionId, owner);
+  },
+  getCandidateTagProfileForMissedPath(missedPathId) {
+    return getRepository().getCandidateTagProfileForMissedPath(missedPathId);
+  },
   listMissedPaths() {
     return getRepository().listMissedPaths();
   },
@@ -248,6 +257,7 @@ async function handleCurrentMessage(message, sender) {
     }
     if (
       message?.type === MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY ||
+      message?.type === MESSAGE_TYPES.RE_ENCOUNTER_QUERY ||
       message?.type === MESSAGE_TYPES.RE_ENCOUNTER_SHOWN
     ) {
       routingContext.activeTabId = await queryActiveTabId();
@@ -275,6 +285,15 @@ async function handleCurrentMessage(message, sender) {
         message.payload.chosenAt,
         routingContext.sessionOwner
       );
+      try {
+        await getTagEnrichmentCoordinator().refreshSelectedTagProfile(
+          message.payload.sessionId,
+          routingContext.sessionOwner
+        );
+      } catch {
+        // Selected-tag enrichment is best-effort and must never block the
+        // authoritative clicked signal.
+      }
       return createSuccessResponseMessage(message.requestId, {
         candidateChosen
       });
@@ -294,6 +313,7 @@ async function handleCurrentMessage(message, sender) {
       code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
       message:
         message?.type === MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY ||
+        message?.type === MESSAGE_TYPES.RE_ENCOUNTER_QUERY ||
         message?.type === MESSAGE_TYPES.RE_ENCOUNTER_SHOWN
           ? "Unable to determine the current active tab."
           : "Unable to persist the chosen Candidate.",

@@ -82,20 +82,25 @@ export function getNormalizationCapsForCandidate(candidate) {
 }
 
 /**
- * Provisional P0 Re-encounter parameters. The formula weights are frozen, but
- * the threshold, time windows, and penalty sizes have not been validated and
- * must be calibrated after observing 5-10 people in user tests.
+ * Re-encounter v2 parameters (Scheme A, approved 2026-08-29). The former
+ * unavailable novelty slot is now an explainable local tag-similarity signal.
+ * Missing tag evidence falls back to the existing keyword/Jaccard path rather
+ * than duplicating keyword evidence as a synthetic tag bonus.
  *
- * noveltyOrDivergence deliberately stays at zero in P0 because the current
- * local keyword signals do not support a reliable, explainable divergence
- * estimate. No Embedding or model fallback is used.
+ * These values still require calibration after observing 5-10 people in user
+ * tests. No Embedding, model, or network fallback is used.
  */
 export const REENCOUNTER_SCORING_CONFIG = Object.freeze({
   weights: Object.freeze({
     contextSimilarity: 0.45,
+    tagSimilarity: 0.15,
     priorConsideration: 0.25,
-    noveltyOrDivergence: 0.15,
     freshness: 0.15
+  }),
+  tagSimilarity: Object.freeze({
+    contextProfileWeight: 0.75,
+    selectedProfileWeight: 0.25,
+    missingEvidenceMode: "LEGACY_KEYWORD_JACCARD"
   }),
   threshold: 0.6,
   resultLimits: Object.freeze({
@@ -113,12 +118,6 @@ export const REENCOUNTER_SCORING_CONFIG = Object.freeze({
   repeatedDismissal: Object.freeze({
     penaltyPerDismissal: 0.15,
     maximumPenalty: 0.45
-  }),
-  noveltyOrDivergence: Object.freeze({
-    value: 0,
-    mode: "P0_NAMED_ZERO_UNAVAILABLE",
-    limitation:
-      "No reliable explainable P0 novelty signal is available; no model or Embedding is used."
   }),
   calibration: Object.freeze({
     validated: false,

@@ -188,19 +188,19 @@ threshold = 0.55
 
 归一化上限分别为 10 秒可见、3 秒 Hover、2 次回看、3 次重复 Hover。`clicked=true` 时直接归类为 `EXCLUDED_CLICKED`，分数为 0。
 
-重逢 P0：
+重逢 v2（方案 A，2026-08-29 批准）：
 
 ```text
 R = 0.45 × keywordContextSimilarity
+  + 0.15 × tagSimilarity
   + 0.25 × priorConsideration
-  + 0.15 × noveltyOrDivergence
   + 0.15 × freshness
   - cooldownPenalty
   - repeatedDismissalPenalty
 threshold = 0.60, result limit = 1..3
 ```
 
-Context 相似度是搜索词/关键词集合的 Jaccard 相似度；新鲜度视野为 30 天；展示后冷却为 24 小时；`NOT_RELEVANT`/历史 `DISMISSED` 会累计惩罚。P0 的 `noveltyOrDivergence` 固定为 0，因为当前没有可靠且可解释的本地信号，也没有模型或 Embedding 回退。
+Context 相似度是搜索词/关键词集合的 Jaccard 相似度。标签相似度比较历史 Candidate 标签与当前 Context 标签；当前 Session 有已点击候选时使用 `0.75 × Context 标签相似度 + 0.25 × Selected Profile 相似度`，无点击时只使用 Context 标签。历史或当前标签缺失时标签贡献为 0，保留原有关键词/Jaccard 路径，不重复奖励关键词。当前 Active Context 和 TagProfile 由 Background 按激活 tab/Session Owner 读取；Side Panel 不访问 storage，也不发送 owner。新鲜度视野为 30 天；展示后冷却为 24 小时；`NOT_RELEVANT`/历史 `DISMISSED` 会累计惩罚。不存在同平台自动加分，也没有模型、Embedding 或网络回退。
 
 上述参数状态是 `UNVALIDATED_PENDING_5_TO_10_PERSON_TEST`。文档中的数值是代码事实，不代表已经完成用户效果校准。
 

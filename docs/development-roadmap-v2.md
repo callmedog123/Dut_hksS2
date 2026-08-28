@@ -211,7 +211,7 @@ Bilibili / Zhihu / Douyin Search Page
 | 9 | Bilibili 原生标签权限审计与实现 | P1 | 8 | PARTIAL（基础接线 COMPLETED；原生标签能力当前未实现） |
 | 10 | 冻结 Consideration v2 公式 | P1 | 7、8 | COMPLETED |
 | 11 | 实施 Consideration v2 | P1 | 10 | COMPLETED |
-| 12 | 跨平台 Re-encounter v2 | P1 | 11 | PENDING |
+| 12 | 跨平台 Re-encounter v2 | P1 | 11 | COMPLETED |
 | 13 | 知乎 Adapter 与 Runtime | P2 | 6、8、12 | PENDING |
 | 14 | 知乎原生标签增强 | P2 | 13 | PENDING |
 | 15 | 抖音 Adapter 与 Runtime | P2 | 6、8、12 | PENDING |
@@ -400,7 +400,7 @@ Bilibili / Zhihu / Douyin Search Page
 - Consideration v2 精确公式和阈值；
 - Selected Tag Similarity 的精确权重；
 - 不同平台/内容类型/layout 的归一化 caps；
-- Re-encounter v2 标签与关键词特征的精确权重；
+- Re-encounter v2 已冻结为方案 A；具体数值仍待 5～10 人用户测试校准；
 - 三个平台的实际原生标签数据源和 Host Permission；
 
 这些值不得由 AI 在实现时自行猜测。对应任务必须先给出选项、风险和推荐方案，然后等待用户确认。
@@ -1150,6 +1150,58 @@ NOT_CLICKED        → 贡献 = 0（占位）
 只修改 reencounter、scoringConfig、query use case、必要标签读取、纯函数与
 集成测试和路线图；不修改 Adapter、权限或 UI 布局。
 ```
+
+### 6.10 任务 12 完成记录（2026-08-29）—— 跨平台 Re-encounter v2
+
+**用户批准的方案 A**：
+
+```text
+R = 0.45 × keywordContextSimilarity
+  + 0.15 × tagSimilarity
+  + 0.25 × priorConsideration
+  + 0.15 × freshness
+  - cooldownPenalty
+  - repeatedDismissalPenalty
+threshold = 0.60, result limit = 1..3
+```
+
+- `tagSimilarity` 以历史 `CandidateTagProfile` 对当前 `ContextTagProfile` 的
+  Jaccard 相似度为主；当前 Session 存在已点击候选时，按 `0.75 × Context 标签
+  相似度 + 0.25 × SessionSelectedTagProfile 相似度` 计算，否则只使用 Context
+  标签；
+- 历史 Candidate 或当前 Context 标签缺失/为空时，标签贡献为 0，继续使用原有
+  搜索词/关键词 Jaccard 路径，不把关键词重复计算成标签奖励；
+- 在关键词完全无重叠时，即使标签、历史考虑和新鲜度均为 1，最高分也只有
+  `0.55`，低于 `0.60` 阈值，因此标签本身不能成为决定性证据；
+- 当前标签页 ID 由 Background 查询，Side Panel 不发送 owner；Query Use Case
+  通过当前 Active Context 的 owner 读取 Context/Selected Profile。历史
+  Candidate Profile 由 MissedPath 的稳定结果 ID 在 Repository 内部还原，未向
+  MissedPath DTO 增加 owner，也未升级 schema；
+- `CANDIDATE_CHOSEN` 成功后 best-effort 刷新当前 Session 的 Selected Tag
+  Profile；标签刷新失败不回滚或阻塞权威点击信号；
+- 未加入同平台奖励，返回 DTO 保留原 Candidate 的 `source`、`contentType`、
+  `layoutType` 和 URL；原有 30 天 freshness、24 小时 cooldown、重复负反馈惩罚、
+  1～3 条限制和 MissedPath ID 稳定 tie-break 不变；
+- `SHOWN`、`LATER`、`NOT_RELEVANT`、`OPENED` 的消息和 Repository 语义未修改；
+- reasons 使用中文分别说明搜索词、标签、历史考虑、新鲜度、冷却与负反馈；
+- 无模型、Embedding、网络、依赖、权限、Adapter 或 Side Panel 布局变化。
+
+**验证**：
+
+- Re-encounter、Query、Router、消息、Repository 与 Worker 恢复专项测试通过；
+- 全仓 `node --test` 与 `npm test`：449/449 通过；
+- `npm run typecheck`：94 个 JavaScript 文件通过；
+- `npm run build`：build + release validation 通过；
+- `git diff --check`：通过。
+
+**明确限制**：权重、阈值、时间窗口和惩罚仍标记为
+`UNVALIDATED_PENDING_5_TO_10_PERSON_TEST`；Bilibili 当前只有标题/搜索词本地
+fallback，尚未获得原生平台标签。
+
+**任务 12 状态**：COMPLETED
+
+**下一步**：任务 13（知乎 Adapter 与 Runtime）；开始前必须先确认精确知乎搜索
+URL、content-script match 和 host permission。
 
 ### 任务 13：知乎 Adapter 与 Runtime
 

@@ -1,6 +1,10 @@
 // @ts-check
 
 import { rankReencounters } from "./reencounter.js";
+import {
+  isSearchContextV1,
+  isSessionOwnerV1
+} from "../shared/types.js";
 
 export const REENCOUNTER_QUERY_FAILURE_CODES = Object.freeze({
   BUSINESS: "REENCOUNTER_QUERY_FAILED",
@@ -31,7 +35,27 @@ function assertRepository(repository) {
   }
 }
 
-function aggregateHistory(missedPaths, reencounters) {
+function supportsTagProfileReads(repository) {
+  return [
+    "getActiveContextForTab",
+    "getContextTagProfile",
+    "getSessionSelectedTagProfile",
+    "getCandidateTagProfileForMissedPath"
+  ].every((method) => typeof repository[method] === "function");
+}
+
+function isSameContext(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function aggregateHistory(missedPaths, reencounters, candidateProfiles = []) {
+  if (
+    !Array.isArray(candidateProfiles) ||
+    (candidateProfiles.length !== 0 &&
+      candidateProfiles.length !== missedPaths.length)
+  ) {
+    throw new TypeError("Candidate tag profile results are misaligned.");
+  }
   const historyByMissedPathId = new Map();
   for (const reencounter of reencounters) {
     if (
@@ -71,8 +95,9 @@ function aggregateHistory(missedPaths, reencounters) {
     historyByMissedPathId.set(reencounter.missedPathId, history);
   }
 
-  return missedPaths.map((missedPath) => ({
+  return missedPaths.map((missedPath, index) => ({
     missedPath,
+    candidateTagProfile: candidateProfiles[index] ?? null,
     ...(historyByMissedPathId.get(missedPath.id) ?? {
       lastShownAt: null,
       dismissalCount: 0
@@ -86,7 +111,11 @@ function aggregateHistory(missedPaths, reencounters) {
  *
  * @param {{
  *   listMissedPaths: () => Promise<unknown[]>,
- *   listReencounters: () => Promise<unknown[]>
+ *   listReencounters: () => Promise<unknown[]>,
+ *   getActiveContextForTab?: (tabId: number) => Promise<unknown>,
+ *   getContextTagProfile?: (sessionId: string, owner: object) => Promise<unknown>,
+ *   getSessionSelectedTagProfile?: (sessionId: string, owner: object) => Promise<unknown>,
+ *   getCandidateTagProfileForMissedPath?: (missedPathId: string) => Promise<unknown>
  * }} repository
  * @param {{ranker?: typeof rankReencounters}} [options]
  */
@@ -107,9 +136,12 @@ export function createReencounterQueryUseCase(repository, options = {}) {
      *   limit: number
      * }} payload
      */
-    async execute(payload) {
+    async execute(payload, activeTabId) {
       let missedPaths;
       let reencounters;
+      let candidateProfiles = [];
+      let contextTagProfile = null;
+      let sessionSelectedTagProfile = null;
       try {
         [missedPaths, reencounters] = await Promise.all([
           repository.listMissedPaths(),
@@ -117,6 +149,46 @@ export function createReencounterQueryUseCase(repository, options = {}) {
         ]);
         if (!Array.isArray(missedPaths) || !Array.isArray(reencounters)) {
           throw new TypeError("Repository query results must be arrays.");
+        }
+
+        if (
+          supportsTagProfileReads(repository) &&
+          Number.isInteger(activeTabId) &&
+          activeTabId >= 0
+        ) {
+          const activeContext = await repository.getActiveContextForTab(
+            activeTabId
+          );
+          if (
+            activeContext !== null &&
+            isRecord(activeContext) &&
+            isSearchContextV1(activeContext.context) &&
+            isSessionOwnerV1(activeContext.owner) &&
+            activeContext.sessionId === activeContext.owner.sessionId &&
+            isSameContext(activeContext.context, payload.context)
+          ) {
+            [
+              contextTagProfile,
+              sessionSelectedTagProfile,
+              candidateProfiles
+            ] = await Promise.all([
+              repository.getContextTagProfile(
+                activeContext.sessionId,
+                activeContext.owner
+              ),
+              repository.getSessionSelectedTagProfile(
+                activeContext.sessionId,
+                activeContext.owner
+              ),
+              Promise.all(
+                missedPaths.map((missedPath) =>
+                  repository.getCandidateTagProfileForMissedPath(
+                    missedPath.id
+                  )
+                )
+              )
+            ]);
+          }
         }
       } catch (error) {
         throw new ReencounterQueryError(
@@ -128,8 +200,16 @@ export function createReencounterQueryUseCase(repository, options = {}) {
       }
 
       try {
-        const entries = aggregateHistory(missedPaths, reencounters);
-        return ranker(entries, payload.context, { limit: payload.limit });
+        const entries = aggregateHistory(
+          missedPaths,
+          reencounters,
+          candidateProfiles
+        );
+        return ranker(entries, payload.context, {
+          limit: payload.limit,
+          contextTagProfile,
+          sessionSelectedTagProfile
+        });
       } catch (error) {
         throw new ReencounterQueryError(
           REENCOUNTER_QUERY_FAILURE_CODES.BUSINESS,

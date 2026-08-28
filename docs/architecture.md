@@ -22,8 +22,9 @@ sequenceDiagram
   Worker->>Repo: 按 Session Owner 写入 CandidateTagProfile
   Runtime->>Worker: SESSION_FINALIZE
   Worker->>Repo: 原子写 Chosen / Missed Path / finalization marker
-  Panel->>Worker: MISSED_PATHS_QUERY / ACTIVE_CONTEXT_QUERY
-  Worker->>Repo: 查询与重逢排序
+  Panel->>Worker: MISSED_PATHS_QUERY / ACTIVE_CONTEXT_QUERY / RE_ENCOUNTER_QUERY
+  Worker->>Repo: 按激活 tab/Session Owner 读取当前标签画像
+  Worker->>Repo: 读取历史 Candidate 标签、反馈并执行重逢排序
   Worker-->>Panel: 经过验证的 DTO
 ```
 

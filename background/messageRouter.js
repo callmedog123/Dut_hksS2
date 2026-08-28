@@ -109,6 +109,9 @@ function createRequestError(requestId, code, message, retryable) {
  *   getActiveContextForTab?: (tabId: number) => Promise<unknown>,
  *   getSettings?: () => Promise<unknown>,
  *   listReencounters?: () => Promise<unknown[]>,
+ *   getContextTagProfile?: (sessionId: string, owner: object) => Promise<unknown>,
+ *   getSessionSelectedTagProfile?: (sessionId: string, owner: object) => Promise<unknown>,
+ *   getCandidateTagProfileForMissedPath?: (missedPathId: string) => Promise<unknown>,
  *   recordReencounterFeedback?: (payload: object) => Promise<unknown>,
  *   recordReencounterShown?: (payload: object, tabId?: number) => Promise<unknown>,
   *   mergeDiscoveredCandidates?: (payload: object, owner?: object) => Promise<unknown>,
@@ -827,7 +830,8 @@ export function createMessageRouter(repository, options = {}) {
         }
         try {
           const reencounters = await reencounterQueryUseCase.execute(
-            message.payload
+            message.payload,
+            routingContext.activeTabId
           );
           if (!Array.isArray(reencounters)) {
             throw new ReencounterQueryError(

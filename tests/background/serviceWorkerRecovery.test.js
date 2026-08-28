@@ -914,6 +914,20 @@ test("CANDIDATE_CHOSEN persists aggregates and excludes Missed after Worker rest
       DEFAULT_OWNER
     );
     assert.deepEqual(persisted.candidates[0].signals, createSignals(true));
+    assert.deepEqual(
+      await afterFirstWorker.getSessionSelectedTagProfile(
+        "session-1",
+        DEFAULT_OWNER
+      ),
+      {
+        sessionId: "session-1",
+        selectedCandidateCount: 1,
+        tags: [
+          { tag: "considered", candidateCount: 1, weight: 1 },
+          { tag: "result", candidateCount: 1, weight: 1 }
+        ]
+      }
+    );
 
     const restartedWorker = await loadServiceWorker("chosen-restarted");
     const duplicateResponse = await dispatchAsync(

@@ -1031,11 +1031,15 @@ test("echoes requestId and rejects requests that cannot be correlated", async ()
 
 test("routes RE_ENCOUNTER_QUERY success and echoes requestId", async () => {
   const ranked = [{ missedPath: createMissedPath(), score: 0.7, reasons: [] }];
+  let receivedPayload;
+  let receivedActiveTabId;
   const router = createMessageRouter(
     { async listMissedPaths() { return []; } },
     {
       reencounterQueryUseCase: {
-        async execute() {
+        async execute(payload, activeTabId) {
+          receivedPayload = payload;
+          receivedActiveTabId = activeTabId;
           return ranked;
         }
       }
@@ -1047,7 +1051,7 @@ test("routes RE_ENCOUNTER_QUERY success and echoes requestId", async () => {
     "request-reencounter-success"
   );
 
-  const response = await router.route(request);
+  const response = await router.route(request, { activeTabId: 7 });
 
   assert.equal(isReencounterQueryResponse(response), true);
   assert.deepEqual(response, {
@@ -1056,6 +1060,8 @@ test("routes RE_ENCOUNTER_QUERY success and echoes requestId", async () => {
     ok: true,
     data: { reencounters: ranked }
   });
+  assert.deepEqual(receivedPayload, request.payload);
+  assert.equal(receivedActiveTabId, 7);
 });
 
 test("rejects illegal RE_ENCOUNTER_QUERY payload before use-case execution", async () => {

@@ -2003,6 +2003,35 @@ export function createRepository(adapter) {
         isCandidateTagProfileV1
       );
     },
+    /**
+     * Finalized result IDs encode the owner/session identity, while tag record
+     * IDs retain the same identity in its canonical Repository form. Convert
+     * that stable ID locally so historical lookup stays owner-safe without
+     * adding owner data to MissedPath DTOs or accepting it from Side Panel.
+     */
+    async getCandidateTagProfileForMissedPath(missedPathId) {
+      if (!isNonEmptyString(missedPathId)) {
+        return null;
+      }
+      const separatorIndex = missedPathId.lastIndexOf(":");
+      if (separatorIndex <= 0 || separatorIndex === missedPathId.length - 1) {
+        return null;
+      }
+      let sessionIdentity;
+      try {
+        sessionIdentity = decodeURIComponent(
+          missedPathId.slice(0, separatorIndex)
+        );
+      } catch {
+        return null;
+      }
+      const candidateIdentity = missedPathId.slice(separatorIndex + 1);
+      return getRecord(
+        REPOSITORY_KINDS.TAG_CANDIDATE,
+        `${sessionIdentity}:${candidateIdentity}`,
+        isCandidateTagProfileV1
+      );
+    },
     listCandidateTagProfiles(sessionId, owner) {
       const ownedSessionId = sessionRecordId(sessionId, owner);
       return listRecordsWithKeyPrefix(

@@ -1594,6 +1594,11 @@ test("Service Worker routes RE_ENCOUNTER_QUERY through the read-only use case", 
       setPanelBehavior() {
         return Promise.resolve();
       }
+    },
+    tabs: {
+      async query() {
+        return [{ id: 7 }];
+      }
     }
   };
 
