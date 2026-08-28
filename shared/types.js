@@ -1,7 +1,7 @@
 // @ts-check
 
-/** The single version source for all shared v1 contracts. */
-export const SCHEMA_VERSION = 1;
+/** The single version source for messages and Repository envelopes. */
+export const SCHEMA_VERSION = 2;
 
 export const CONSIDERATION_REASON_CODES = Object.freeze({
   LONG_EXPOSURE: "LONG_EXPOSURE",
@@ -54,6 +54,17 @@ export const DEFAULT_SETTINGS_V1 = Object.freeze({
 /** @typedef {typeof REENCOUNTER_REASON_CODES[keyof typeof REENCOUNTER_REASON_CODES]} ReencounterReasonCodeV1 */
 /** @typedef {typeof REENCOUNTER_OUTCOMES[keyof typeof REENCOUNTER_OUTCOMES]} ReencounterOutcomeV1 */
 /** @typedef {typeof REENCOUNTER_FEEDBACK_OUTCOMES[keyof typeof REENCOUNTER_FEEDBACK_OUTCOMES]} ReencounterFeedbackOutcomeV1 */
+
+/**
+ * Background-authoritative identity for one content-document Session.
+ * Content scripts never place this object in a message payload.
+ *
+ * @typedef {object} SessionOwnerV1
+ * @property {number} tabId
+ * @property {string} documentId
+ * @property {number} frameId
+ * @property {string} sessionId
+ */
 
 /**
  * @typedef {object} SettingsV1
@@ -240,6 +251,12 @@ const SETTINGS_KEYS = Object.freeze([
   "thresholds",
   "demoMode"
 ]);
+const SESSION_OWNER_KEYS = Object.freeze([
+  "tabId",
+  "documentId",
+  "frameId",
+  "sessionId"
+]);
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -283,6 +300,20 @@ function isConstantValue(constants, value) {
 
 function isNonNegativeInteger(value) {
   return Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is SessionOwnerV1}
+ */
+export function isSessionOwnerV1(value) {
+  return Boolean(
+    hasExactKeys(value, SESSION_OWNER_KEYS) &&
+      isNonNegativeInteger(value.tabId) &&
+      isNonEmptyString(value.documentId) &&
+      isNonNegativeInteger(value.frameId) &&
+      isNonEmptyString(value.sessionId)
+  );
 }
 
 /**

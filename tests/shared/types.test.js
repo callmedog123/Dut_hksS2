@@ -84,8 +84,8 @@ const validReencounterRecord = Object.freeze({
   shownAt: 300
 });
 
-test("uses one shared schemaVersion constant fixed at 1", () => {
-  assert.equal(SCHEMA_VERSION, 1);
+test("uses one shared schemaVersion constant fixed at 2", () => {
+  assert.equal(SCHEMA_VERSION, 2);
   assert.equal(MESSAGE_SCHEMA_VERSION, SCHEMA_VERSION);
 });
 

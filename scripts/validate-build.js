@@ -9,6 +9,7 @@ const BILIBILI_MATCH = "https://search.bilibili.com/*";
 const CONTENT_SCRIPT_ENTRY = "content/contentScript.js";
 const CONTENT_MODULE_RESOURCES = [
   "content/bilibiliRuntime.js",
+  "content/siteRuntime.js",
   "content/adapters/bilibiliSearchAdapter.js",
   "content/candidateBinding.js",
   "content/eventCollector/click.js",
@@ -105,9 +106,7 @@ if (fs.existsSync(bilibiliRuntimePath)) {
   const runtimeSource = fs.readFileSync(bilibiliRuntimePath, "utf8");
   for (const requiredImport of [
     "./adapters/bilibiliSearchAdapter.js",
-    "./eventCollector/click.js",
-    "./eventCollector/hover.js",
-    "./visibility.js"
+    "./siteRuntime.js"
   ]) {
     check(
       runtimeSource.includes(requiredImport),
@@ -115,8 +114,41 @@ if (fs.existsSync(bilibiliRuntimePath)) {
     );
   }
   check(
+    !/\.\/eventCollector\/|\.\/visibility\.js/u.test(runtimeSource),
+    "Bilibili Runtime must delegate collectors to the shared Site Runtime"
+  );
+  check(
     !/localStorage|indexedDB|chrome\.storage/iu.test(runtimeSource),
     "Bilibili Runtime must not access browser storage directly"
+  );
+}
+
+const siteRuntimePath = path.join(root, "content/siteRuntime.js");
+if (fs.existsSync(siteRuntimePath)) {
+  const runtimeSource = fs.readFileSync(siteRuntimePath, "utf8");
+  for (const requiredImport of [
+    "./eventCollector/click.js",
+    "./eventCollector/hover.js",
+    "./visibility.js"
+  ]) {
+    check(
+      runtimeSource.includes(requiredImport),
+      `Site Runtime must reuse ${requiredImport}`
+    );
+  }
+  check(
+    runtimeSource.includes("options.createAdapter"),
+    "Site Runtime must receive its Site Adapter through the shared interface"
+  );
+  check(
+    !/bilibiliSearchAdapter|search\.bilibili\.com|bili-video-card/iu.test(
+      runtimeSource
+    ),
+    "Site Runtime must not contain Bilibili imports, URLs, or selectors"
+  );
+  check(
+    !/localStorage|indexedDB|chrome\.storage/iu.test(runtimeSource),
+    "Site Runtime must not access browser storage directly"
   );
 }
 

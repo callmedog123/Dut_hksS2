@@ -30,7 +30,8 @@ sequenceDiagram
 - `manifest.json`：冻结最低 Chrome 版本、唯一权限、Bilibili content script 和受限的 web-accessible module 图。
 - `background/serviceWorker.js`：Side Panel 行为、消息入口、Repository 与业务用例装配。
 - `content/contentScript.js`：经典 content script 入口，只动态加载本地 `content/bilibiliRuntime.js`。
-- `content/bilibiliRuntime.js`：真实站点会话生命周期、聚合快照、SPA 边界和结算。
+- `content/siteRuntime.js`：站点无关的真实页面会话生命周期、Candidate/Element binding、采集器、SPA 边界和结算编排；只依赖注入的 Site Adapter 接口。
+- `content/bilibiliRuntime.js`：Bilibili 薄包装，负责创建 Bilibili Adapter 并注入通用 Site Runtime，同时保留原有兼容导出。
 - `demo/app.js` + `content/demoRuntime.js`：扩展内部 Demo 的确定性闭环。
 - `sidepanel/index.html` + `sidepanel/app.js`：本地记录、情境化重逢、反馈和数据控制 UI。
 
@@ -40,7 +41,7 @@ sequenceDiagram
 | --- | --- | --- |
 | Site Adapter | 判断页面、提取 `Candidate`/`SearchContext`、绑定卡片 Element、观察动态结果 | 评分、存储、Chrome 消息、UI |
 | Event Collector | 聚合可见时长、Hover 时长/次数、回看次数、点击 | 键盘/表单采集、完整鼠标轨迹、直接存储 |
-| Content/Demo Runtime | 管理会话和绑定生命周期，发送严格消息，处理 SPA/页面退出结算 | 业务评分、IndexedDB、Side Panel 渲染 |
+| Site/Demo Runtime | 管理会话和绑定生命周期，发送严格消息，处理 SPA/页面退出结算 | 业务评分、IndexedDB、Side Panel 渲染 |
 | Message Router / Use Cases | 校验消息、检查暂停状态、调用业务用例、返回统一响应 | 站点 DOM/选择器、UI 状态 |
 | Session Manager / Scoring | Chosen 排除、考虑度结算、重逢排序和可解释 reasons | DOM、网络、模型 |
 | Repository | schemaVersion、CRUD、单调快照、原子结算、级联删除 | 评分、页面解析、UI 文案 |
@@ -71,7 +72,7 @@ Runtime 支持：
 
 ## 持久化与恢复
 
-Repository 使用扩展 origin 下的 IndexedDB 数据库和单一 `repository-records` 对象仓库。每条记录有 `schemaVersion: 1` 包装，Repository 对未知 schemaVersion 直接报错，不做静默迁移。
+Repository 使用扩展 origin 下的 IndexedDB 数据库和单一 `repository-records` 对象仓库。每条记录有 `schemaVersion: 2` 包装；合法 v1 记录会在首次 Repository 访问时通过一次存储事务原子、幂等升级，未知版本或无元数据的非空库明确报错。
 
 关键恢复不变量：
 
@@ -93,4 +94,3 @@ Side Panel 用 `textContent` 写入业务文本，并在打开 URL 前进行 HTT
 - Bilibili DOM 类名更新需要只在 Adapter 内调整并重新验证。
 - P0 固定启发式和关键词匹配尚未通过目标用户样本校准。
 - Demo fixture 证明的是代码闭环，不证明真实站点覆盖率或用户价值。
-
