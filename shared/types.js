@@ -172,6 +172,27 @@ export const DEFAULT_SETTINGS_V1 = Object.freeze({
  */
 
 /**
+ * One aggregated tag of the Candidates a user actually selected in a Session.
+ * candidateCount is how many selected Candidates carried the tag, so a tag
+ * shared by several selections outranks a tag seen once.
+ *
+ * @typedef {object} SelectedTagWeightV1
+ * @property {string} tag
+ * @property {number} candidateCount
+ * @property {number} weight
+ */
+
+/**
+ * The tag profile derived from every clicked Candidate in one Session. With no
+ * clicked Candidate this is explicitly empty rather than absent.
+ *
+ * @typedef {object} SessionSelectedTagProfileV1
+ * @property {string} sessionId
+ * @property {number} selectedCandidateCount
+ * @property {readonly SelectedTagWeightV1[]} tags
+ */
+
+/**
  * Minimal aggregate signals retained for one Candidate.
  *
  * @typedef {object} CandidateSignalsV1
@@ -340,6 +361,16 @@ const CANDIDATE_TAG_PROFILE_KEYS = Object.freeze([
   "sessionId",
   "nativeTags",
   "normalizedTags"
+]);
+const SELECTED_TAG_WEIGHT_KEYS = Object.freeze([
+  "tag",
+  "candidateCount",
+  "weight"
+]);
+const SESSION_SELECTED_TAG_PROFILE_KEYS = Object.freeze([
+  "sessionId",
+  "selectedCandidateCount",
+  "tags"
 ]);
 
 function isRecord(value) {
@@ -566,6 +597,58 @@ export function isCandidateTagProfileV1(value) {
   return value.nativeTags.every((nativeTag) => {
     const normalizedTag = normalizeTagForValidation(nativeTag);
     return normalizedTag !== null && normalizedTagSet.has(normalizedTag);
+  });
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is SelectedTagWeightV1}
+ */
+export function isSelectedTagWeightV1(value) {
+  return Boolean(
+    hasExactKeys(value, SELECTED_TAG_WEIGHT_KEYS) &&
+      typeof value.tag === "string" &&
+      normalizeTagForValidation(value.tag) === value.tag &&
+      Number.isInteger(value.candidateCount) &&
+      value.candidateCount > 0 &&
+      isUnitNumber(value.weight) &&
+      value.weight > 0
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is SessionSelectedTagProfileV1}
+ */
+export function isSessionSelectedTagProfileV1(value) {
+  if (
+    !hasExactKeys(value, SESSION_SELECTED_TAG_PROFILE_KEYS) ||
+    !isNonEmptyString(value.sessionId) ||
+    !isNonNegativeInteger(value.selectedCandidateCount) ||
+    !Array.isArray(value.tags) ||
+    value.tags.length > TAG_LIMITS.maxTags ||
+    !value.tags.every(isSelectedTagWeightV1)
+  ) {
+    return false;
+  }
+
+  if (value.selectedCandidateCount === 0) {
+    return value.tags.length === 0;
+  }
+
+  return value.tags.every((entry, index) => {
+    if (entry.candidateCount > value.selectedCandidateCount) {
+      return false;
+    }
+    if (index === 0) {
+      return true;
+    }
+    const previous = value.tags[index - 1];
+    return (
+      previous.candidateCount > entry.candidateCount ||
+      (previous.candidateCount === entry.candidateCount &&
+        compareTagText(previous.tag, entry.tag) < 0)
+    );
   });
 }
 

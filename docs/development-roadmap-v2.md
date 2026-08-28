@@ -207,7 +207,7 @@ Bilibili / Zhihu / Douyin Search Page
 | 5 | Worker/浏览器重启后的自动恢复结算 | P0 | 4 | COMPLETED |
 | 6 | Side Panel 跟随当前激活标签页 | P0 | 5 | COMPLETED |
 | 7 | 本地标签纯函数与共享类型 | P1 | 2 | COMPLETED |
-| 8 | 标签 Repository 与懒加载 Provider | P1 | 4、7 | PENDING |
+| 8 | 标签 Repository 与懒加载 Provider | P1 | 4、7 | COMPLETED |
 | 9 | Bilibili 原生标签权限审计与实现 | P1 | 8 | PENDING |
 | 10 | 冻结 Consideration v2 公式 | P1 | 7、8 | PENDING |
 | 11 | 实施 Consideration v2 | P1 | 10 | PENDING |
@@ -261,6 +261,34 @@ Bilibili / Zhihu / Douyin Search Page
 - `CandidateV1`、`SearchContextV1`、schemaVersion 2、消息 payload、Repository、Provider、评分、Runtime、Adapter、权限和 UI 均未改变；Task 8 的持久化和富化接线未提前实现；
 - 标签/共享类型/build 专项测试 37/37 通过；全仓 `node --test` 与 `npm test` 均为 371/371 通过；`npm run typecheck` 检查 88 个 JavaScript 文件通过；`npm run build` 的 build/release validation 通过；
 - A-1 只增加纯函数和 DTO，没有新增真实浏览器行为；本任务未把自动测试表述为 Chrome 手动验收。
+
+### 6.5 任务 8 完成记录（2026-08-28）
+
+- 开始 HEAD：`7f1c950`；本任务只使用 fake provider，未接入任何真实平台网络；
+- 用户已批准「方案 A 保守」富化门槛，集中冻结在 `background/tagEnrichment.js` 的
+  `TAG_ENRICHMENT_CONFIG`：clicked 立即合格、`returnCount >= 1`、`hoverMs >= 1200`、
+  `behaviorScore >= 0.35`，且 `exposureAloneQualifies: false`；每会话最多富化 12 个候选、
+  单候选最多 2 次尝试、退避 5000ms 起按 2 倍增长；
+- 该门槛与 `CONSIDERATION_SCORING_CONFIG.threshold` 完全独立，并有测试断言其独立性；
+  由于 exposure 单项权重上限为 0.30 < 0.35，饱和曝光单独永远无法触发原生标签请求，
+  这正是针对网格整行共同曝光的设计意图，并有专项测试覆盖；
+- 新增三个 owner 隔离的 Repository kind：`tag-context`、`tag-candidate`、`tag-selected`，
+  记录 ID 复用 `createSessionOwnerKey`，`candidateId` 经 `encodeURIComponent` 编码，
+  含分隔符的 candidateId 仍可寻址；未新增 schemaVersion，未迁移数据；
+- 同一候选并发请求合并为一次 provider 调用，成功结果缓存，失败按退避重试并在
+  达到上限后停止；provider 失败一律退回任务 7 的搜索词/标题本地标签，绝不阻塞 finalize；
+- 多个 clicked 候选共同形成 `SessionSelectedTagProfileV1`，重复出现的标签获得更高
+  `candidateCount`/`weight`；无点击时明确持久化为空 profile 而非缺失；
+- 级联语义按批准执行：`deleteSession` 与 `deleteAll` 清除标签数据，单条
+  `deleteMissedPath` 明确保留同会话标签 Profile（同会话其他 Missed Path 仍需使用）；
+- provider 缓存/并发表/退避表只存在于 Worker 生命周期内存，属网络优化；权威标签
+  数据全部在 Repository，Worker 重启后仍可读取，并有测试覆盖；
+- 未修改评分、Manifest、权限、Adapter、Side Panel、消息协议或 Runtime；
+- 标签富化与标签 Repository 专项测试 31/31 通过；全仓 `node --test` 与 `npm test`
+  均为 402/402 通过；`npm run typecheck` 检查 92 个 JavaScript 文件通过；
+  `npm run build` 的 build/release validation 通过；`git diff --check` 通过；
+- 本任务未执行真实 Chrome 手动验收，也未接入真实平台标签数据源；任务 9 仍需先做
+  只读权限审计并等待用户批准。
 
 ## 7. 权限决策记录
 

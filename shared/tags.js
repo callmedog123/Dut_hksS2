@@ -192,6 +192,86 @@ export function createContextTagProfile(input) {
 }
 
 /**
+ * Aggregate the tag profiles of the Candidates a user actually selected.
+ * A tag repeated across several selected Candidates receives a higher
+ * frequency weight. With no selected Candidate the profile is explicitly
+ * empty, never absent.
+ *
+ * @param {{sessionId: string, selectedProfiles?: unknown}} input
+ * @returns {Readonly<import("./types.js").SessionSelectedTagProfileV1>}
+ */
+export function createSessionSelectedTagProfile(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError("Selected tag profile input must be an object.");
+  }
+
+  const sessionId = requireIdentifier(input.sessionId, "sessionId");
+  const profiles = Array.isArray(input.selectedProfiles)
+    ? input.selectedProfiles
+    : [];
+
+  /** @type {Map<string, number>} */
+  const candidateCountByTag = new Map();
+  const countedCandidateIds = new Set();
+  for (const profile of profiles) {
+    if (
+      !profile ||
+      typeof profile !== "object" ||
+      Array.isArray(profile) ||
+      profile.sessionId !== sessionId ||
+      typeof profile.candidateId !== "string" ||
+      !profile.candidateId ||
+      countedCandidateIds.has(profile.candidateId) ||
+      !Array.isArray(profile.normalizedTags)
+    ) {
+      continue;
+    }
+
+    countedCandidateIds.add(profile.candidateId);
+    const seenInCandidate = new Set();
+    for (const tag of profile.normalizedTags) {
+      const normalizedTag = normalizeTag(tag);
+      if (normalizedTag === null || seenInCandidate.has(normalizedTag)) {
+        continue;
+      }
+      seenInCandidate.add(normalizedTag);
+      candidateCountByTag.set(
+        normalizedTag,
+        (candidateCountByTag.get(normalizedTag) ?? 0) + 1
+      );
+    }
+  }
+
+  const selectedCandidateCount = countedCandidateIds.size;
+  if (selectedCandidateCount === 0) {
+    return Object.freeze({
+      sessionId,
+      selectedCandidateCount: 0,
+      tags: Object.freeze([])
+    });
+  }
+
+  const tags = [...candidateCountByTag.entries()]
+    .sort(([leftTag, leftCount], [rightTag, rightCount]) => {
+      return rightCount - leftCount || compareText(leftTag, rightTag);
+    })
+    .slice(0, TAG_LIMITS.maxTags)
+    .map(([tag, candidateCount]) =>
+      Object.freeze({
+        tag,
+        candidateCount,
+        weight: candidateCount / selectedCandidateCount
+      })
+    );
+
+  return Object.freeze({
+    sessionId,
+    selectedCandidateCount,
+    tags: Object.freeze(tags)
+  });
+}
+
+/**
  * @param {{candidateId: string, sessionId: string, title: unknown, nativeTags?: unknown}} input
  * @returns {Readonly<import("./types.js").CandidateTagProfileV1>}
  */
