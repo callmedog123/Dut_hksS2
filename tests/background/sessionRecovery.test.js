@@ -66,6 +66,21 @@ function createCoordinator(repository, nowRef, leasePrefix = "recovery") {
   });
 }
 
+function createCoordinatorWithPageCheck(
+  repository,
+  nowRef,
+  isPageInstanceActive
+) {
+  const manager = createSessionManager(repository, {
+    leaseIdFactory: () => "manager-page-check"
+  });
+  return createSessionRecoveryCoordinator(repository, manager, {
+    now: () => nowRef.value,
+    leaseIdFactory: () => "recovery-page-check",
+    isPageInstanceActive
+  });
+}
+
 test("recovers persisted Chosen and Missed Paths once after a forced exit", async () => {
   const adapter = createTransactionalMemoryStorageAdapter();
   const repository = createRepository(adapter);
@@ -240,6 +255,70 @@ test("abandons empty or zero-signal Sessions and clears their contexts", async (
   assert.equal(await repository.getActiveContextForTab(owner.tabId), null);
   assert.deepEqual(await repository.listChosen(), []);
   assert.deepEqual(await repository.listMissedPaths(), []);
+  assert.deepEqual(
+    await repository.getSessionFinalization("session-zero", owner),
+    {
+      sessionId: "session-zero",
+      owner,
+      finalizedAt: nowRef.value,
+      chosenIds: [],
+      missedPathIds: [],
+      status: SESSION_LIFECYCLE_STATUSES.ABANDONED
+    }
+  );
+
+  const restartedManager = createSessionManager(repository, {
+    leaseIdFactory: () => "must-not-be-used"
+  });
+  assert.deepEqual(
+    await restartedManager.finalizeSession(
+      "session-zero",
+      nowRef.value + 1,
+      owner,
+      { abandonIfNoMeaningful: true }
+    ),
+    {
+      sessionId: "session-zero",
+      abandonedAt: nowRef.value,
+      abandoned: true,
+      alreadyFinalized: true,
+      chosen: [],
+      missedPaths: []
+    }
+  );
+});
+
+test("ordinary recovery skips the exact living page instance", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const owner = createOwner(7, "session-live-context");
+  await discover(repository, owner.sessionId, 1_000, owner);
+  const nowRef = { value: 1_000 + SESSION_RECOVERY_CONFIG.recoveryWindowMs };
+  const checkedOwners = [];
+  const coordinator = createCoordinatorWithPageCheck(
+    repository,
+    nowRef,
+    async (session) => {
+      checkedOwners.push(session.owner);
+      return true;
+    }
+  );
+
+  const result = await coordinator.scan();
+
+  assert.deepEqual(checkedOwners, [owner]);
+  assert.deepEqual(result.skipped, [owner.sessionId]);
+  assert.deepEqual(result.finalized, []);
+  assert.deepEqual(result.abandoned, []);
+  assert.equal(
+    (await repository.getSession(owner.sessionId, owner)).status,
+    SESSION_LIFECYCLE_STATUSES.OPEN
+  );
+  assert.equal(
+    await repository.getSessionFinalization(owner.sessionId, owner),
+    null
+  );
 });
 
 test("isolates two tabs and skips a recently re-registered Session", async () => {

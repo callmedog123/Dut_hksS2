@@ -2,6 +2,7 @@ import {
   MESSAGE_TYPES,
   RESPONSE_ERROR_CODES,
   SCHEMA_VERSION,
+  createActiveTabChangedMessage,
   createErrorResponseMessage,
   createPongMessage,
   createSchemaVersionUnsupportedResponse,
@@ -41,7 +42,31 @@ function getSessionRecoveryCoordinator() {
   if (sessionRecoveryCoordinator === undefined) {
     sessionRecoveryCoordinator = createSessionRecoveryCoordinator(
       getRepository(),
-      getSessionManager()
+      getSessionManager(),
+      {
+        async isPageInstanceActive(session) {
+          const owner = session?.owner;
+          if (
+            owner === undefined ||
+            typeof chrome.runtime?.getContexts !== "function"
+          ) {
+            return false;
+          }
+          const contexts = await chrome.runtime.getContexts({
+            contextTypes: ["TAB"],
+            tabIds: [owner.tabId],
+            documentIds: [owner.documentId],
+            frameIds: [owner.frameId]
+          });
+          return contexts.some(
+            (context) =>
+              context.contextType === "TAB" &&
+              context.tabId === owner.tabId &&
+              context.documentId === owner.documentId &&
+              context.frameId === owner.frameId
+          );
+        }
+      }
     );
   }
   return sessionRecoveryCoordinator;
@@ -111,20 +136,49 @@ const messageRouter = createMessageRouter({
   sessionFinalizeUseCase
 });
 
-async function queryActiveTabId() {
+async function queryActiveTabId(windowId) {
   if (typeof chrome.tabs?.query !== "function") {
     throw new Error("Chrome Tabs query is unavailable.");
   }
-  const tabs = await chrome.tabs.query({
-    active: true,
-    lastFocusedWindow: true
-  });
+  const queryInfo = Number.isInteger(windowId)
+    ? { active: true, windowId }
+    : { active: true, lastFocusedWindow: true };
+  const tabs = await chrome.tabs.query(queryInfo);
   const tabId = tabs.find((tab) => Number.isInteger(tab?.id))?.id;
   if (!Number.isInteger(tabId) || tabId < 0) {
     throw new Error("The active tab does not have an ID.");
   }
   return tabId;
 }
+
+async function notifyActiveTabChanged(tabId, windowId) {
+  if (typeof chrome.runtime?.sendMessage !== "function") {
+    return;
+  }
+  try {
+    await chrome.runtime.sendMessage(
+      createActiveTabChangedMessage(tabId, windowId)
+    );
+  } catch {
+    // The notification is best-effort when no Side Panel page is open. Its
+    // next load still performs an authoritative ACTIVE_CONTEXT_QUERY.
+  }
+}
+
+chrome.tabs?.onActivated?.addListener((activeInfo) => {
+  void notifyActiveTabChanged(activeInfo.tabId, activeInfo.windowId);
+});
+
+chrome.windows?.onFocusChanged?.addListener((windowId) => {
+  if (!Number.isInteger(windowId) || windowId < 0) {
+    return;
+  }
+  void queryActiveTabId(windowId)
+    .then((tabId) => notifyActiveTabChanged(tabId, windowId))
+    .catch(() => {
+      // A window can disappear while Chrome resolves its active tab.
+    });
+});
 
 function getMessageSessionId(message) {
   return message?.type === MESSAGE_TYPES.SIGNALS_UPDATED
@@ -269,9 +323,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-// A newly evaluated Worker may safely take over only expired FINALIZING
-// leases. Stale OPEN Sessions are handled on browser startup, leaving a living
-// page free to re-register after an ordinary MV3 Worker sleep/wake cycle.
+// Chrome 116+ can distinguish the exact live content-document context without
+// adding permissions, so every Worker evaluation can safely include stale
+// OPEN Sessions. Chrome 114-115 retain the conservative startup-only OPEN
+// fallback and still take over expired FINALIZING leases on ordinary wakes.
 if (globalThis.indexedDB !== undefined) {
-  void runSessionRecovery(false);
+  void runSessionRecovery(
+    typeof chrome.runtime?.getContexts === "function"
+  );
 }

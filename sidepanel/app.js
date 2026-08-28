@@ -12,6 +12,7 @@ import {
   createReencounterShownMessage,
   createSettingsUpdateMessage,
   isActiveContextQueryResponse,
+  isActiveTabChangedMessage,
   isDataDeleteAllResponse,
   isMissedPathDeleteResponse,
   isMissedPathsQueryResponse,
@@ -172,7 +173,14 @@ function requireElement(documentRef, id) {
 /**
  * @param {{
  *   document: Document,
- *   runtime: {lastError?: {message?: string}, sendMessage: (message: object, callback: (response: unknown) => void) => void},
+ *   runtime: {
+ *     lastError?: {message?: string},
+ *     sendMessage: (message: object, callback: (response: unknown) => void) => void,
+ *     onMessage: {
+ *       addListener: (listener: (message: unknown) => boolean) => void,
+ *       removeListener?: (listener: (message: unknown) => boolean) => void
+ *     }
+ *   },
  *   now?: () => number,
  *   openUrl?: (url: string) => unknown
  * }} dependencies
@@ -188,6 +196,9 @@ export function createSidePanelApp({
   }
   if (!runtime || typeof runtime.sendMessage !== "function") {
     throw new TypeError("Side Panel requires chrome.runtime messaging.");
+  }
+  if (typeof runtime.onMessage?.addListener !== "function") {
+    throw new TypeError("Side Panel requires chrome.runtime.onMessage.");
   }
   if (typeof now !== "function") {
     throw new TypeError("Side Panel now dependency must be a function.");
@@ -1055,6 +1066,14 @@ export function createSidePanelApp({
     return request;
   }
 
+  function handleRuntimeMessage(message) {
+    if (!isActiveTabChangedMessage(message)) {
+      return false;
+    }
+    loadContextualReencounters();
+    return false;
+  }
+
   retryButton.addEventListener("click", loadMissedPaths);
   activeContextRetryButton.addEventListener(
     "click",
@@ -1073,11 +1092,16 @@ export function createSidePanelApp({
   dataDeleteAllButton.addEventListener("click", armDataDeleteAll);
   dataDeleteAllCancelButton.addEventListener("click", cancelDataDeleteAll);
   dataDeleteAllConfirmButton.addEventListener("click", submitDataDeleteAll);
+  runtime.onMessage.addListener(handleRuntimeMessage);
 
   return Object.freeze({
     load() {
       loadMissedPaths();
       loadContextualReencounters();
+    },
+    dispose() {
+      contextLoadGeneration += 1;
+      runtime.onMessage.removeListener?.(handleRuntimeMessage);
     },
     loadContextualReencounters,
     loadMissedPaths

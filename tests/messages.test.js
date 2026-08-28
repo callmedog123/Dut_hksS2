@@ -10,6 +10,7 @@ import {
   REENCOUNTER_FEEDBACK_OUTCOMES,
   SCHEMA_VERSION,
   createActiveContextQueryMessage,
+  createActiveTabChangedMessage,
   createCandidateChosenMessage,
   createCandidatesDiscoveredMessage,
   createDataDeleteAllMessage,
@@ -28,6 +29,7 @@ import {
   createSuccessResponseMessage,
   isActiveContextQueryMessage,
   isActiveContextQueryResponse,
+  isActiveTabChangedMessage,
   isCandidateChosenMessage,
   isCandidatesDiscoveredMessage,
   isCandidatesDiscoveredResponse,
@@ -118,6 +120,12 @@ const sessionFinalize = createSessionFinalizeMessage(
 const activeContextQuery = createActiveContextQueryMessage(
   "request-active-context"
 );
+const activeTabChanged = createActiveTabChangedMessage(
+  12,
+  7,
+  480,
+  "request-active-tab-changed"
+);
 const missedPathsQuery = createMissedPathsQueryMessage("request-missed-paths");
 const dataDeleteAll = createDataDeleteAllMessage(
   1_400,
@@ -184,6 +192,12 @@ const reencounterFeedback = createReencounterFeedbackMessage(
 );
 
 const messageCases = [
+  {
+    name: "ACTIVE_TAB_CHANGED",
+    message: activeTabChanged,
+    validator: isActiveTabChangedMessage,
+    wrongType: MESSAGE_TYPES.PING
+  },
   {
     name: "ACTIVE_CONTEXT_QUERY",
     message: activeContextQuery,
@@ -270,10 +284,11 @@ const messageCases = [
   }
 ];
 
-test("keeps MESSAGE_TYPES frozen with the implemented v1 messages", () => {
+test("keeps MESSAGE_TYPES frozen with the implemented messages", () => {
   assert.equal(Object.isFrozen(MESSAGE_TYPES), true);
   assert.deepEqual(Object.keys(MESSAGE_TYPES).sort(), [
     "ACTIVE_CONTEXT_QUERY",
+    "ACTIVE_TAB_CHANGED",
     "CANDIDATES_DISCOVERED",
     "CANDIDATE_CHOSEN",
     "DATA_DELETE_ALL",
@@ -940,6 +955,31 @@ test("RE_ENCOUNTER_SHOWN response strictly validates persisted identity", () => 
       })
     ),
     true
+  );
+});
+
+test("creates a strict Background ACTIVE_TAB_CHANGED notification", () => {
+  assert.deepEqual(activeTabChanged, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.ACTIVE_TAB_CHANGED,
+    requestId: "request-active-tab-changed",
+    payload: { tabId: 12, windowId: 7, changedAt: 480 }
+  });
+  assert.equal(isActiveTabChangedMessage(activeTabChanged), true);
+  assert.throws(
+    () => createActiveTabChangedMessage(-1, 7, 480, "request-invalid"),
+    TypeError
+  );
+  assert.throws(
+    () => createActiveTabChangedMessage(12, -1, 480, "request-invalid"),
+    TypeError
+  );
+  assert.equal(
+    isActiveTabChangedMessage({
+      ...activeTabChanged,
+      payload: { ...activeTabChanged.payload, url: "https://example.com" }
+    }),
+    false
   );
 });
 

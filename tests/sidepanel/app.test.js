@@ -17,6 +17,7 @@ import {
   REENCOUNTER_FEEDBACK_OUTCOMES,
   RESPONSE_ERROR_CODES,
   createErrorResponseMessage,
+  createActiveTabChangedMessage,
   createSuccessResponseMessage,
   isActiveContextQueryMessage,
   isDataDeleteAllMessage,
@@ -238,8 +239,19 @@ function createHarness(
   const document = new FixtureDocument();
   const sentMessages = [];
   const shownUiStates = [];
+  let runtimeMessageListener = null;
   const runtime = {
     lastError: undefined,
+    onMessage: {
+      addListener(listener) {
+        runtimeMessageListener = listener;
+      },
+      removeListener(listener) {
+        if (runtimeMessageListener === listener) {
+          runtimeMessageListener = null;
+        }
+      }
+    },
     sendMessage(message, callback) {
       sentMessages.push(message);
       if (isReencounterShownMessage(message)) {
@@ -266,7 +278,17 @@ function createHarness(
     }
   };
   const app = createSidePanelApp({ document, runtime, now, openUrl });
-  return { app, document, runtime, sentMessages, shownUiStates };
+  return {
+    app,
+    document,
+    runtime,
+    sentMessages,
+    shownUiStates,
+    emitRuntimeMessage(message) {
+      assert.equal(typeof runtimeMessageListener, "function");
+      return runtimeMessageListener(message);
+    }
+  };
 }
 
 test("shows loading while a Repository response is pending", () => {
@@ -1345,6 +1367,164 @@ test("ignores a late Re-encounter response after the active context changes", ()
   assert.deepEqual(shownMessages[0].payload.triggerContext, secondContext);
 });
 
+test("follows rapid Background tab notifications and ignores late A/B responses", () => {
+  const pending = [];
+  const harness = createHarness(({ message, callback }) => {
+    if (isMissedPathsQueryMessage(message)) {
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          missedPaths: [createMissedPath()]
+        })
+      );
+      return;
+    }
+    pending.push({ message, callback });
+  });
+  const firstContext = createContext({ query: "tab A" });
+  const secondContext = createContext({ query: "tab B", timestamp: 200 });
+  const thirdContext = createContext({ query: "tab C", timestamp: 300 });
+
+  harness.app.load();
+  assert.equal(isActiveContextQueryMessage(pending[0].message), true);
+  harness.emitRuntimeMessage(
+    createActiveTabChangedMessage(2, 1, 1_001, "tab-b-notification")
+  );
+  harness.emitRuntimeMessage(
+    createActiveTabChangedMessage(3, 1, 1_002, "tab-c-notification")
+  );
+  assert.equal(pending.length, 3);
+
+  pending[2].callback(
+    createSuccessResponseMessage(pending[2].message.requestId, {
+      status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+      context: thirdContext
+    })
+  );
+  assert.equal(isReencounterQueryMessage(pending[3].message), true);
+  pending[3].callback(
+    createSuccessResponseMessage(pending[3].message.requestId, {
+      reencounters: [createRankedReencounter(3)]
+    })
+  );
+  pending[1].callback(
+    createSuccessResponseMessage(pending[1].message.requestId, {
+      status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+      context: secondContext
+    })
+  );
+  pending[0].callback(
+    createSuccessResponseMessage(pending[0].message.requestId, {
+      status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+      context: firstContext
+    })
+  );
+
+  const cards = harness.document.getElementById("reencounter-list").children;
+  assert.equal(cards.length, 1);
+  assert.equal(findByClass(cards[0], "card-title").textContent, "Example result 3");
+  assert.match(
+    harness.document.getElementById("active-context-summary").textContent,
+    /tab C/u
+  );
+  assert.equal(
+    harness.document.getElementById("card-list").children.length,
+    1,
+    "historical Missed Paths remain visible across tab changes"
+  );
+  const shownMessages = harness.sentMessages.filter(isReencounterShownMessage);
+  assert.equal(shownMessages.length, 1);
+  assert.deepEqual(shownMessages[0].payload.triggerContext, thirdContext);
+});
+
+test("tab change immediately invalidates old SHOWN and FEEDBACK card actions", () => {
+  const context = createContext({ query: "tab A" });
+  let activeContextQueryCount = 0;
+  const harness = createHarness(({ message, callback }) => {
+    if (isActiveContextQueryMessage(message)) {
+      activeContextQueryCount += 1;
+      if (activeContextQueryCount > 1) {
+        return;
+      }
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
+          context
+        })
+      );
+    } else if (isReencounterQueryMessage(message)) {
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          reencounters: [createRankedReencounter()]
+        })
+      );
+    }
+  });
+
+  harness.app.loadContextualReencounters();
+  const oldCard = harness.document.getElementById("reencounter-list").children[0];
+  const oldLaterButton = findByAttribute(
+    oldCard,
+    "data-outcome",
+    REENCOUNTER_FEEDBACK_OUTCOMES.LATER
+  );
+  assert.equal(oldLaterButton.disabled, false);
+
+  harness.emitRuntimeMessage(
+    createActiveTabChangedMessage(2, 1, 1_001, "tab-switch")
+  );
+  assert.equal(
+    harness.document
+      .getElementById("active-context-status")
+      .getAttribute("data-state"),
+    "loading"
+  );
+  oldLaterButton.click();
+
+  assert.equal(
+    harness.sentMessages.filter(isReencounterFeedbackMessage).length,
+    0
+  );
+});
+
+test("tab notification renders unsupported-page empty state without clearing history", () => {
+  let activeContextQueries = 0;
+  const harness = createHarness(({ message, callback }) => {
+    if (isMissedPathsQueryMessage(message)) {
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          missedPaths: [createMissedPath()]
+        })
+      );
+    } else if (isActiveContextQueryMessage(message)) {
+      activeContextQueries += 1;
+      callback(
+        createSuccessResponseMessage(message.requestId, {
+          status: ACTIVE_CONTEXT_STATUSES.UNAVAILABLE,
+          context: null
+        })
+      );
+    }
+  });
+
+  harness.app.load();
+  harness.emitRuntimeMessage(
+    createActiveTabChangedMessage(9, 1, 1_001, "unsupported-tab")
+  );
+
+  assert.equal(activeContextQueries, 2);
+  assert.equal(
+    harness.document
+      .getElementById("active-context-status")
+      .getAttribute("data-state"),
+    "empty"
+  );
+  assert.match(
+    harness.document.getElementById("active-context-status").textContent,
+    /受支持的搜索页/u
+  );
+  assert.equal(harness.document.getElementById("card-list").children.length, 1);
+});
+
 test("Re-encounter ViewModel mapping safely falls back for unknown reasons", () => {
   const viewModel = toReencounterViewModel(
     createRankedReencounter(1, {
@@ -1355,13 +1535,17 @@ test("Re-encounter ViewModel mapping safely falls back for unknown reasons", () 
   assert.deepEqual(viewModel.reasons, [UNKNOWN_REASON_LABEL]);
 });
 
-test("uses module markup and no direct browser storage API", () => {
+test("uses module markup and no webpage inspection or direct storage API", () => {
   const appSource = readFileSync("sidepanel/app.js", "utf8");
   const htmlSource = readFileSync("sidepanel/index.html", "utf8");
 
   assert.doesNotMatch(
     appSource,
     /localStorage|indexedDB|chrome\.storage/iu
+  );
+  assert.doesNotMatch(
+    appSource,
+    /chrome\.tabs\.(?:query|get|getCurrent)|chrome\.scripting|window\.location/iu
   );
   assert.match(
     htmlSource,

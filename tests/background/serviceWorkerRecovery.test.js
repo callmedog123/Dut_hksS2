@@ -114,23 +114,29 @@ function createReencounter() {
   };
 }
 
-async function loadServiceWorker(label, activeTabId = DEFAULT_OWNER.tabId) {
+async function loadServiceWorker(
+  label,
+  activeTabId = DEFAULT_OWNER.tabId,
+  getContexts
+) {
   let messageListener;
   let startupListener;
-  globalThis.chrome = {
-    runtime: {
-      onInstalled: { addListener() {} },
-      onStartup: {
-        addListener(listener) {
-          startupListener = listener;
-        }
-      },
-      onMessage: {
-        addListener(listener) {
-          messageListener = listener;
-        }
+  const runtime = {
+    onInstalled: { addListener() {} },
+    onStartup: {
+      addListener(listener) {
+        startupListener = listener;
       }
     },
+    onMessage: {
+      addListener(listener) {
+        messageListener = listener;
+      }
+    },
+    ...(getContexts === undefined ? {} : { getContexts })
+  };
+  globalThis.chrome = {
+    runtime,
     sidePanel: {
       setPanelBehavior() {
         return Promise.resolve();
@@ -154,6 +160,16 @@ async function loadServiceWorker(label, activeTabId = DEFAULT_OWNER.tabId) {
   assert.equal(typeof startupListener, "function");
   messageListener.startupListener = startupListener;
   return messageListener;
+}
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (await predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail("Timed out waiting for asynchronous Worker recovery.");
 }
 
 function dispatchAsync(listener, message, sender = {
@@ -277,6 +293,66 @@ test("browser startup recovers a stale OPEN Session once", async () => {
     );
     await restartedWorker.startupListener();
     assert.equal((await afterFirstStartup.listMissedPaths()).length, 1);
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
+test("ordinary Worker wake scans stale OPEN and preserves an exact live document", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+  const staleAt = Date.now() - SESSION_RECOVERY_CONFIG.recoveryWindowMs - 1_000;
+  const repository = createRepository(
+    createIndexedDbStorageAdapter({ indexedDB })
+  );
+  await repository.mergeDiscoveredCandidates(
+    {
+      sessionId: "session-1",
+      context: createContext(staleAt),
+      candidates: [createCandidate()],
+      discoveredAt: staleAt
+    },
+    DEFAULT_OWNER
+  );
+  let contextChecks = 0;
+
+  try {
+    await loadServiceWorker(
+      "ordinary-wake-live-context",
+      DEFAULT_OWNER.tabId,
+      async (filter) => {
+        contextChecks += 1;
+        assert.deepEqual(filter, {
+          contextTypes: ["TAB"],
+          tabIds: [DEFAULT_OWNER.tabId],
+          documentIds: [DEFAULT_OWNER.documentId],
+          frameIds: [DEFAULT_OWNER.frameId]
+        });
+        return [{ contextType: "TAB", ...DEFAULT_OWNER }];
+      }
+    );
+    await waitFor(() => contextChecks > 0);
+    assert.equal(
+      (await repository.getSession("session-1", DEFAULT_OWNER)).status,
+      SESSION_LIFECYCLE_STATUSES.OPEN
+    );
+
+    await loadServiceWorker(
+      "ordinary-wake-page-gone",
+      DEFAULT_OWNER.tabId,
+      async () => []
+    );
+    await waitFor(async () =>
+      (await repository.getSession("session-1", DEFAULT_OWNER)).status ===
+      SESSION_LIFECYCLE_STATUSES.ABANDONED
+    );
+    assert.equal(await repository.getActiveContextForTab(DEFAULT_OWNER.tabId), null);
+    assert.equal(
+      (await repository.getSessionFinalization("session-1", DEFAULT_OWNER))
+        .status,
+      SESSION_LIFECYCLE_STATUSES.ABANDONED
+    );
   } finally {
     delete globalThis.chrome;
     delete globalThis.indexedDB;

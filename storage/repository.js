@@ -176,19 +176,17 @@ function isChosen(value) {
 
 function isSessionFinalization(value) {
   const hasOwner = isRecord(value) && Object.hasOwn(value, "owner");
+  const hasStatus = isRecord(value) && Object.hasOwn(value, "status");
+  const expectedKeys = ["sessionId"];
+  if (hasOwner) {
+    expectedKeys.push("owner");
+  }
+  expectedKeys.push("finalizedAt", "chosenIds", "missedPathIds");
+  if (hasStatus) {
+    expectedKeys.push("status");
+  }
   return Boolean(
-    hasExactKeys(
-      value,
-      hasOwner
-        ? [
-            "sessionId",
-            "owner",
-            "finalizedAt",
-            "chosenIds",
-            "missedPathIds"
-          ]
-        : ["sessionId", "finalizedAt", "chosenIds", "missedPathIds"]
-    ) &&
+    hasExactKeys(value, expectedKeys) &&
     isNonEmptyString(value.sessionId) &&
       (!hasOwner ||
         (isSessionOwnerV1(value.owner) &&
@@ -198,7 +196,11 @@ function isSessionFinalization(value) {
       isStringList(value.chosenIds) &&
       new Set(value.chosenIds).size === value.chosenIds.length &&
       isStringList(value.missedPathIds) &&
-      new Set(value.missedPathIds).size === value.missedPathIds.length
+      new Set(value.missedPathIds).size === value.missedPathIds.length &&
+      (!hasStatus ||
+        (value.status === SESSION_LIFECYCLE_STATUSES.ABANDONED &&
+          value.chosenIds.length === 0 &&
+          value.missedPathIds.length === 0))
   );
 }
 
@@ -1800,6 +1802,10 @@ export function createRepository(adapter) {
       const ownedSessionId = sessionRecordId(abandonment.sessionId, owner);
       const ownedActiveContextId = activeContextRecordId(owner);
       const sessionKey = recordKey(REPOSITORY_KINDS.SESSION, ownedSessionId);
+      const markerKey = recordKey(
+        REPOSITORY_KINDS.SESSION_FINALIZATION,
+        ownedSessionId
+      );
       const activeContextKey = recordKey(
         REPOSITORY_KINDS.ACTIVE_CONTEXT,
         ownedActiveContextId
@@ -1865,6 +1871,23 @@ export function createRepository(adapter) {
               REPOSITORY_KINDS.SESSION,
               ownedSessionId,
               abandonedSession
+            )
+          },
+          {
+            key: markerKey,
+            value: createStoredRecord(
+              REPOSITORY_KINDS.SESSION_FINALIZATION,
+              ownedSessionId,
+              {
+                sessionId: abandonment.sessionId,
+                ...(owner === undefined || owner === null
+                  ? {}
+                  : { owner: cloneJson(owner) }),
+                finalizedAt: abandonment.abandonedAt,
+                chosenIds: [],
+                missedPathIds: [],
+                status: SESSION_LIFECYCLE_STATUSES.ABANDONED
+              }
             )
           }
         ],

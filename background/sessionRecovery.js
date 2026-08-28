@@ -30,6 +30,10 @@ function assertDependencies(repository, sessionManager) {
   }
 }
 
+async function assumePageInstanceInactive() {
+  return false;
+}
+
 function isLeaseUnavailable(error) {
   return (
     error instanceof Error &&
@@ -43,7 +47,12 @@ function isLeaseUnavailable(error) {
  *
  * @param {ReturnType<typeof import("../storage/repository.js").createRepository>} repository
  * @param {ReturnType<typeof import("./sessionManager.js").createSessionManager>} sessionManager
- * @param {{now?: () => number, leaseIdFactory?: (session: object) => string, recoveryWindowMs?: number}} [options]
+ * @param {{
+ *   now?: () => number,
+ *   leaseIdFactory?: (session: object) => string,
+ *   recoveryWindowMs?: number,
+ *   isPageInstanceActive?: (session: object) => Promise<boolean>
+ * }} [options]
  */
 export function createSessionRecoveryCoordinator(
   repository,
@@ -53,11 +62,14 @@ export function createSessionRecoveryCoordinator(
   assertDependencies(repository, sessionManager);
   const now = options.now ?? (() => Date.now());
   const leaseIdFactory = options.leaseIdFactory ?? createDefaultLeaseId;
+  const isPageInstanceActive =
+    options.isPageInstanceActive ?? assumePageInstanceInactive;
   const recoveryWindowMs =
     options.recoveryWindowMs ?? SESSION_RECOVERY_CONFIG.recoveryWindowMs;
   if (
     typeof now !== "function" ||
     typeof leaseIdFactory !== "function" ||
+    typeof isPageInstanceActive !== "function" ||
     !Number.isFinite(recoveryWindowMs) ||
     recoveryWindowMs < 0
   ) {
@@ -99,6 +111,27 @@ export function createSessionRecoveryCoordinator(
         if (!staleOpen && !expiredFinalizing) {
           result.skipped.push(session.sessionId);
           continue;
+        }
+
+        // OPEN recovery is safe only after checking the exact persisted page
+        // instance. An expired FINALIZING lease remains recoverable: a living
+        // page can reopen it by re-registering before the lease expires.
+        if (staleOpen && Object.hasOwn(session, "owner")) {
+          try {
+            const pageIsActive = await isPageInstanceActive(session);
+            if (typeof pageIsActive !== "boolean") {
+              throw new TypeError(
+                "Session Recovery page-instance check must return boolean."
+              );
+            }
+            if (pageIsActive) {
+              result.skipped.push(session.sessionId);
+              continue;
+            }
+          } catch (error) {
+            result.failed.push({ sessionId: session.sessionId, error });
+            continue;
+          }
         }
 
         const finalizationLeaseId = leaseIdFactory(session);

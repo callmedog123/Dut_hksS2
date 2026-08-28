@@ -205,7 +205,7 @@ Bilibili / Zhihu / Douyin Search Page
 | 3 | Session Owner 与多标签页 Active Context | P0 | 2 | COMPLETED |
 | 4 | 信号检查点与持久化 Session 生命周期 | P0 | 3 | COMPLETED |
 | 5 | Worker/浏览器重启后的自动恢复结算 | P0 | 4 | COMPLETED |
-| 6 | Side Panel 跟随当前激活标签页 | P0 | 5 | PENDING |
+| 6 | Side Panel 跟随当前激活标签页 | P0 | 5 | COMPLETED |
 | 7 | 本地标签纯函数与共享类型 | P1 | 2 | PENDING |
 | 8 | 标签 Repository 与懒加载 Provider | P1 | 4、7 | PENDING |
 | 9 | Bilibili 原生标签权限审计与实现 | P1 | 8 | PENDING |
@@ -278,7 +278,6 @@ Bilibili / Zhihu / Douyin Search Page
 - 不同平台/内容类型/layout 的归一化 caps；
 - Re-encounter v2 标签与关键词特征的精确权重；
 - 三个平台的实际原生标签数据源和 Host Permission；
-- 是否能在不增加 `tabs` 权限的前提下可靠获得当前激活 tab ID。
 
 这些值不得由 AI 在实现时自行猜测。对应任务必须先给出选项、风险和推荐方案，然后等待用户确认。
 
@@ -507,11 +506,23 @@ Worker 下次被唤醒时扫描遗留 OPEN 或租约过期的 FINALIZING Session
 Chosen、存储回滚、重启后不重复。
 
 实现记录（2026-08-28）：恢复窗口暂定为 `30,000 ms`，持久化 finalize 租约
-时长为 `15,000 ms`。浏览器启动扫描过期 `OPEN` 与 `FINALIZING` Session；普通
-Worker 唤醒只接管租约已过期的 `FINALIZING`，避免把仍存活但暂时安静的页面
-误结算。页面以原 Session 重新 discovery 会刷新活动时间并撤销尚未完成的租约。
-空候选或全零信号 Session 原子转为 `ABANDONED`；其他 Session 使用最后持久化
-快照生成 Chosen/MissedPath。未增加 tabs 权限、常驻定时器或自动网络行为。
+时长为 `15,000 ms`。浏览器启动扫描过期 `OPEN` 与 `FINALIZING` Session；在
+Chrome 116+，普通 Worker 唤醒通过 `chrome.runtime.getContexts()` 按持久化的
+`tabId + documentId + frameId` 检查精确页面实例，仍存活的页面跳过恢复，页面
+消失后才结算陈旧 `OPEN`。Chrome 114–115 保留保守兼容路径：普通唤醒只接管
+租约过期的 `FINALIZING`，浏览器启动仍扫描陈旧 `OPEN`。页面以原 Session
+重新 discovery 会刷新活动时间并撤销尚未完成的租约。
+
+空候选或全零信号 Session 会在同一事务中写入 `ABANDONED` 状态、durable
+finalization marker 并清理对应 Active Context；其他 Session 使用最后持久化
+快照原子生成 Chosen/MissedPath，clicked Candidate 始终只进入 Chosen。重复扫描、
+两个 Worker 竞争、租约接管、存储回滚和重启后重试均有覆盖。未增加
+`tabs`/`activeTab` 权限、Host Permission、常驻定时器或自动网络行为。
+
+验证记录：任务 5 恢复/Worker/Repository 定向测试 59/59 通过；全仓
+`npm test` 351/351 通过；`npm run typecheck` 检查 85 个 JavaScript 文件通过；
+`npm run build` 的 build/release validation 通过。真实 Chrome 强制退出与
+Worker 休眠/唤醒仍需按手动验收流程单独验证，不能由自动测试替代。
 ```
 
 ### 任务 6：Side Panel 跟随当前标签页
@@ -538,6 +549,22 @@ Worker 唤醒只接管租约已过期的 `FINALIZING`，避免把仍存活但暂
 验收：
 A/B tab 快速切换、无 Context、迟到响应、Worker 重启、查询失败、SHOWN 关联、
 Side Panel 无 storage API。
+
+实现记录（2026-08-28）：新增严格 `ACTIVE_TAB_CHANGED` 通知，只携带由
+Background 提供的 `tabId`、`windowId` 和时间戳；Side Panel 不使用通知中的
+标签数据计算 Context，而是在收到 `tabs.onActivated` 或窗口聚焦变化通知后
+重新发送 `ACTIVE_CONTEXT_QUERY`，当前 tab 与 Context 始终由 Background
+权威查询。Side Panel 复用并扩展既有本地 generation/requestId 防线，切换时
+立即使旧 Context、Re-encounter、SHOWN 回调和反馈按钮失效，迟到响应不能覆盖
+新标签页结果；历史 MissedPath 列表独立保留，无支持页面显示明确空态。
+
+经 Chrome Tabs/Windows API 权限审计，本任务只监听标签激活、窗口聚焦并读取
+非敏感 tab ID，不读取 URL/title/favicon，因此无需新增 `tabs`、`activeTab`
+或 host 权限，`manifest.json` 未修改。任务 6 相关消息、Background、Active
+Context、Worker 恢复和 Side Panel 专项回归 131/131 通过；全仓 `npm test`
+356/356 通过；`npm run typecheck` 检查 86 个 JavaScript 文件通过；`npm run
+build` 的 build/release validation 通过。真实 Chrome A/B 标签快速切换、
+多窗口聚焦和 Worker 休眠/唤醒仍需手动验收，自动测试不替代浏览器结果。
 ```
 
 ### 任务 7：本地标签纯函数与共享类型

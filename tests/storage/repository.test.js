@@ -752,6 +752,51 @@ test("persists, takes over, validates, and cancels finalization leases", async (
   assert.equal(resumed.updatedAt, 420);
 });
 
+test("atomically abandons a leased Session with its marker and Context cleanup", async () => {
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  await repository.mergeDiscoveredCandidates(createDiscovery());
+  await repository.claimSessionFinalizationLease({
+    sessionId: "session-1",
+    finalizationLeaseId: "abandon-lease",
+    claimedAt: 300,
+    leaseUntil: 400
+  });
+  adapter.failNextCommit(new Error("simulated abandonment failure"));
+
+  await assert.rejects(() =>
+    repository.abandonSessionAtomically({
+      sessionId: "session-1",
+      abandonedAt: 350,
+      finalizationLeaseId: "abandon-lease"
+    })
+  );
+  assert.equal(
+    (await repository.getSession("session-1")).status,
+    SESSION_LIFECYCLE_STATUSES.FINALIZING
+  );
+  assert.notEqual(await repository.getActiveContext(), null);
+  assert.equal(await repository.getSessionFinalization("session-1"), null);
+
+  await repository.abandonSessionAtomically({
+    sessionId: "session-1",
+    abandonedAt: 350,
+    finalizationLeaseId: "abandon-lease"
+  });
+  assert.equal(
+    (await repository.getSession("session-1")).status,
+    SESSION_LIFECYCLE_STATUSES.ABANDONED
+  );
+  assert.equal(await repository.getActiveContext(), null);
+  assert.deepEqual(await repository.getSessionFinalization("session-1"), {
+    sessionId: "session-1",
+    finalizedAt: 350,
+    chosenIds: [],
+    missedPathIds: [],
+    status: SESSION_LIFECYCLE_STATUSES.ABANDONED
+  });
+});
+
 test("switches and restores the one durable active context idempotently", async () => {
   const adapter = createTransactionalMemoryStorageAdapter();
   const repository = createRepository(adapter);

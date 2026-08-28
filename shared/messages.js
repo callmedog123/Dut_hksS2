@@ -23,6 +23,7 @@ export {
 };
 
 export const MESSAGE_TYPES = Object.freeze({
+  ACTIVE_TAB_CHANGED: "ACTIVE_TAB_CHANGED",
   ACTIVE_CONTEXT_QUERY: "ACTIVE_CONTEXT_QUERY",
   CANDIDATE_CHOSEN: "CANDIDATE_CHOSEN",
   CANDIDATES_DISCOVERED: "CANDIDATES_DISCOVERED",
@@ -115,6 +116,18 @@ export const RESPONSE_ERROR_CODES = Object.freeze({
  * @property {typeof MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY} type
  * @property {string} requestId
  * @property {Record<string, never>} payload
+ */
+
+/**
+ * Background-only notification that the browser's authoritative active tab
+ * changed. Consumers must re-query ACTIVE_CONTEXT_QUERY instead of treating
+ * the tab metadata as Context data.
+ *
+ * @typedef {object} ActiveTabChangedMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.ACTIVE_TAB_CHANGED} type
+ * @property {string} requestId
+ * @property {{tabId: number, windowId: number, changedAt: number}} payload
  */
 
 /**
@@ -252,6 +265,11 @@ const SIGNALS_UPDATED_PAYLOAD_KEYS = Object.freeze([
 const SESSION_FINALIZE_PAYLOAD_KEYS = Object.freeze([
   "sessionId",
   "finalizedAt"
+]);
+const ACTIVE_TAB_CHANGED_PAYLOAD_KEYS = Object.freeze([
+  "tabId",
+  "windowId",
+  "changedAt"
 ]);
 const SETTINGS_UPDATE_PAYLOAD_KEYS = Object.freeze([
   "enabled",
@@ -738,6 +756,49 @@ export function isMissedPathsQueryMessage(message) {
   return Boolean(
     hasValidEnvelope(message, MESSAGE_TYPES.MISSED_PATHS_QUERY) &&
       hasExactKeys(message.payload, [])
+  );
+}
+
+/**
+ * @param {number} tabId
+ * @param {number} windowId
+ * @param {number} [changedAt]
+ * @param {string} [requestId]
+ * @returns {ActiveTabChangedMessageV1}
+ */
+export function createActiveTabChangedMessage(
+  tabId,
+  windowId,
+  changedAt = Date.now(),
+  requestId = createRequestId()
+) {
+  requireRequestId(requestId, "ACTIVE_TAB_CHANGED");
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.ACTIVE_TAB_CHANGED,
+    requestId,
+    payload: { tabId, windowId, changedAt }
+  };
+  if (!isActiveTabChangedMessage(message)) {
+    throw new TypeError("Failed to create a valid ACTIVE_TAB_CHANGED message.");
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is ActiveTabChangedMessageV1}
+ */
+export function isActiveTabChangedMessage(message) {
+  return Boolean(
+    hasValidEnvelope(message, MESSAGE_TYPES.ACTIVE_TAB_CHANGED) &&
+      hasExactKeys(message.payload, ACTIVE_TAB_CHANGED_PAYLOAD_KEYS) &&
+      Number.isInteger(message.payload.tabId) &&
+      message.payload.tabId >= 0 &&
+      Number.isInteger(message.payload.windowId) &&
+      message.payload.windowId >= 0 &&
+      isFiniteNumber(message.payload.changedAt) &&
+      message.payload.changedAt >= 0
   );
 }
 

@@ -4,6 +4,7 @@ import {
   CONSIDERATION_CLASSIFICATIONS,
   calculateConsideration
 } from "./consideration.js";
+import { SESSION_LIFECYCLE_STATUSES } from "../shared/types.js";
 import { createSessionOwnerKey } from "../storage/repository.js";
 
 export const SESSION_FINALIZATION_CONFIG = Object.freeze({
@@ -175,6 +176,19 @@ export function createSessionManager(repository, options = {}) {
       const existingMarker =
         await repository.getSessionFinalization(sessionId, owner);
       if (existingMarker !== null) {
+        if (
+          existingMarker.status ===
+          SESSION_LIFECYCLE_STATUSES.ABANDONED
+        ) {
+          return {
+            sessionId,
+            abandonedAt: existingMarker.finalizedAt,
+            abandoned: true,
+            alreadyFinalized: true,
+            chosen: [],
+            missedPaths: []
+          };
+        }
         const records = await loadFinalizedRecords(repository, existingMarker);
         return {
           sessionId,
