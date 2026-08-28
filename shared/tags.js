@@ -1,48 +1,8 @@
 // @ts-check
 
-/** Central limits for all local tag extraction and profile construction. */
-export const TAG_LIMITS = Object.freeze({
-  maxSourceCodePoints: 512,
-  maxTagCodePoints: 32,
-  maxTags: 12,
-  maxNativeTags: 12
-});
+import { TAG_LIMITS, TAG_STOP_WORDS } from "./types.js";
 
-/** A deliberately small, reviewable stop-word list. */
-export const TAG_STOP_WORDS = Object.freeze([
-  "a",
-  "an",
-  "and",
-  "are",
-  "as",
-  "at",
-  "be",
-  "by",
-  "for",
-  "from",
-  "in",
-  "is",
-  "it",
-  "of",
-  "on",
-  "or",
-  "the",
-  "to",
-  "with",
-  "与",
-  "为",
-  "从",
-  "到",
-  "及",
-  "和",
-  "在",
-  "是",
-  "的",
-  "了",
-  "这",
-  "那",
-  "或"
-]);
+export { TAG_LIMITS, TAG_STOP_WORDS };
 
 const STOP_WORD_SET = new Set(TAG_STOP_WORDS);
 const CONTROL_OR_FORMAT_PATTERN = /[\p{Cc}\p{Cf}]+/gu;

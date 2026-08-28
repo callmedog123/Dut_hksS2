@@ -1,6 +1,6 @@
 # 数据契约
 
-The Unclicked 当前唯一共享契约版本是 `SCHEMA_VERSION = 2`。领域校验在 `shared/types.js`，Chrome 消息信封和 payload 校验在 `shared/messages.js`，持久化二次校验与 v1→v2 迁移在 `storage/repository.js`。领域 DTO 仍保留 `V1` 名称和字段，因为本次只升级消息与 Repository 信封版本，没有加入标签或其他业务字段。
+The Unclicked 当前唯一共享契约版本是 `SCHEMA_VERSION = 2`。领域校验在 `shared/types.js`，Chrome 消息信封和 payload 校验在 `shared/messages.js`，持久化二次校验与 v1→v2 迁移在 `storage/repository.js`。原有领域 DTO 仍保留 `V1` 名称和字段；标签以独立 TagProfile DTO 表达，不改变 `CandidateV1`、消息 payload 或当前 Repository 记录。
 
 ## 领域对象
 
@@ -8,6 +8,8 @@ The Unclicked 当前唯一共享契约版本是 `SCHEMA_VERSION = 2`。领域校
 | --- | --- | --- |
 | `CandidateV1` | `id`、规范化 `url`、`title`、`source`、`rank`、`sessionId` | Adapter 输出；不含 Element |
 | `SearchContextV1` | `query`、`source`、`timestamp`、可选 `keywords` | 会话与重逢的最小情境 |
+| `ContextTagProfileV1` | `sessionId`、稳定排序的 `normalizedTags` | 由搜索词本地提取；当前只生成 DTO，不持久化 |
+| `CandidateTagProfileV1` | `candidateId`、`sessionId`、`nativeTags`、`normalizedTags` | 标题本地标签与平台标签的独立视图；当前只生成 DTO，不持久化 |
 | `CandidateSignalsV1` | `candidateId`、`sessionId`、`visibleMs`、`hoverMs`、`hoverCount`、`returnCount`、`clicked` | 候选级累计快照，不是原始事件流 |
 | `MissedPathV1` | Candidate、Context、`score`、`reasons`、`status`、`createdAt` | 未点击且达到考虑阈值的持久化结果 |
 | Chosen | Candidate、Context、`chosenAt` | 已点击候选；结算时绝不进入 Missed Path |
@@ -16,6 +18,15 @@ The Unclicked 当前唯一共享契约版本是 `SCHEMA_VERSION = 2`。领域校
 | `SettingsV1` | `enabled`、allowlist/blocklist、两个阈值、`demoMode` | 当前 UI 只修改 `enabled`；清空业务数据时保留 |
 
 `Candidate + Element` 绑定不是领域 DTO。Element 只存在于页面内存的 WeakMap/Map 中，不能进入消息、JSON 或 Repository。
+
+## 本地标签契约
+
+- `shared/types.js` 是标签数量、文本长度、输入长度和 stop words 的唯一限制来源；`shared/tags.js` 只依赖共享契约并提供纯函数。
+- 本地提取只处理搜索词或 Candidate 标题，支持中文、英文、数字和 hashtag；使用 Unicode NFKC、统一大小写和空白后去重，并按确定性顺序输出。
+- `nativeTags` 保存经最小清理的平台展示标签，可保留大小写和 `#`；`normalizedTags` 保存用于本地比较的规范形式。两个字段不能互相代替，且每个保留的 native tag 必须在 `normalizedTags` 中有对应项。
+- TagProfile 输出及其中数组不可变；纯函数不访问 DOM、storage、网络、Chrome API、模型、时间或随机数，也不修改输入。
+- 空值、空标题/query、控制字符、无效 Unicode、纯标点、重复、超长文本和超量标签会安全地产生空结果或受中央上限约束的结果。
+- 任务 7 不把 TagProfile 接入消息、Repository、评分、Provider、Adapter 或 UI；持久化和按需富化属于后续任务 8。
 
 ## Repository 记录种类
 

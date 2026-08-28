@@ -10,9 +10,11 @@ import {
   REENCOUNTER_REASON_CODES,
   SCHEMA_VERSION,
   SESSION_LIFECYCLE_STATUSES,
+  isCandidateTagProfileV1,
   isCandidateSignalsV1,
   isCandidateV1,
   isConsiderationReasonV1,
+  isContextTagProfileV1,
   isMissedPathV1,
   isRankedReencounterV1,
   isReencounterFeedbackV1,
@@ -23,6 +25,7 @@ import {
   isSettingsV1
 } from "../../shared/types.js";
 import { MESSAGE_SCHEMA_VERSION } from "../../shared/messages.js";
+import { TAG_LIMITS } from "../../shared/tags.js";
 
 const validCandidate = Object.freeze({
   id: "candidate-1",
@@ -37,6 +40,18 @@ const validContext = Object.freeze({
   query: "robot navigation",
   source: "local-demo",
   timestamp: 100
+});
+
+const validContextTagProfile = Object.freeze({
+  sessionId: "session-1",
+  normalizedTags: Object.freeze(["ai", "robot", "机器人"])
+});
+
+const validCandidateTagProfile = Object.freeze({
+  candidateId: "candidate-1",
+  sessionId: "session-1",
+  nativeTags: Object.freeze(["#AI", "机器人"]),
+  normalizedTags: Object.freeze(["ai", "robot", "机器人"])
 });
 
 const validSignals = Object.freeze({
@@ -105,6 +120,7 @@ test("rejects invalid or extra CandidateV1 fields", () => {
     { ...validCandidate, rank: 0 },
     { ...validCandidate, rank: 1.5 },
     { ...validCandidate, sessionId: "" },
+    { ...validCandidate, tags: [] },
     { ...validCandidate, extra: true },
     Object.fromEntries(
       Object.entries(validCandidate).filter(([key]) => key !== "title")
@@ -141,6 +157,78 @@ test("rejects invalid or extra SearchContextV1 fields", () => {
 
   for (const context of invalidContexts) {
     assert.equal(isSearchContextV1(context), false);
+  }
+});
+
+test("accepts strict ContextTagProfileV1 and CandidateTagProfileV1 DTOs", () => {
+  assert.equal(isContextTagProfileV1(validContextTagProfile), true);
+  assert.equal(isCandidateTagProfileV1(validCandidateTagProfile), true);
+  assert.equal(
+    isContextTagProfileV1({ sessionId: "session-1", normalizedTags: [] }),
+    true
+  );
+  assert.equal(
+    isCandidateTagProfileV1({
+      candidateId: "candidate-1",
+      sessionId: "session-1",
+      nativeTags: [],
+      normalizedTags: []
+    }),
+    true
+  );
+});
+
+test("rejects invalid or non-canonical ContextTagProfileV1 fields", () => {
+  const invalidProfiles = [
+    null,
+    { ...validContextTagProfile, sessionId: "" },
+    { ...validContextTagProfile, normalizedTags: "ai" },
+    { ...validContextTagProfile, normalizedTags: ["AI"] },
+    { ...validContextTagProfile, normalizedTags: ["robot", "ai"] },
+    { ...validContextTagProfile, normalizedTags: ["ai", "ai"] },
+    {
+      ...validContextTagProfile,
+      normalizedTags: Array.from(
+        { length: TAG_LIMITS.maxTags + 1 },
+        (_, index) => `tag${String(index).padStart(2, "0")}`
+      )
+    },
+    { ...validContextTagProfile, extra: true },
+    { sessionId: "session-1" }
+  ];
+
+  for (const profile of invalidProfiles) {
+    assert.equal(isContextTagProfileV1(profile), false);
+  }
+});
+
+test("rejects invalid or inconsistent CandidateTagProfileV1 fields", () => {
+  const invalidProfiles = [
+    null,
+    { ...validCandidateTagProfile, candidateId: "" },
+    { ...validCandidateTagProfile, sessionId: "" },
+    { ...validCandidateTagProfile, nativeTags: "#AI" },
+    { ...validCandidateTagProfile, nativeTags: [" #AI "] },
+    { ...validCandidateTagProfile, nativeTags: ["机器人", "#AI"] },
+    { ...validCandidateTagProfile, nativeTags: ["#AI", "ai"] },
+    {
+      ...validCandidateTagProfile,
+      normalizedTags: ["robot", "机器人"]
+    },
+    {
+      ...validCandidateTagProfile,
+      normalizedTags: ["机器人", "ai", "robot"]
+    },
+    { ...validCandidateTagProfile, extra: true },
+    {
+      candidateId: "candidate-1",
+      sessionId: "session-1",
+      nativeTags: ["#AI"]
+    }
+  ];
+
+  for (const profile of invalidProfiles) {
+    assert.equal(isCandidateTagProfileV1(profile), false);
   }
 });
 

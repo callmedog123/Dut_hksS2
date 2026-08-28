@@ -206,7 +206,7 @@ Bilibili / Zhihu / Douyin Search Page
 | 4 | 信号检查点与持久化 Session 生命周期 | P0 | 3 | COMPLETED |
 | 5 | Worker/浏览器重启后的自动恢复结算 | P0 | 4 | COMPLETED |
 | 6 | Side Panel 跟随当前激活标签页 | P0 | 5 | COMPLETED |
-| 7 | 本地标签纯函数与共享类型 | P1 | 2 | PENDING |
+| 7 | 本地标签纯函数与共享类型 | P1 | 2 | COMPLETED |
 | 8 | 标签 Repository 与懒加载 Provider | P1 | 4、7 | PENDING |
 | 9 | Bilibili 原生标签权限审计与实现 | P1 | 8 | PENDING |
 | 10 | 冻结 Consideration v2 公式 | P1 | 7、8 | PENDING |
@@ -252,6 +252,15 @@ Bilibili / Zhihu / Douyin Search Page
 - v1→v2 迁移形成的 legacy Session/Context 继续可由兼容 Repository API 查询，但无 owner 的全局 Context 不会作为任何当前 tab Context 返回；
 - Owner/多标签页/Worker 恢复专项测试 19/19、全仓 `node --test` 与 `npm test` 336/336 通过；`npm run typecheck` 检查 83 个 JavaScript 文件通过；`npm run build` 的 build/release validation 通过；
 - 本任务未执行真实 Chrome 多标签页手动验收；任务 6 完成 Side Panel 标签切换监听后仍需补做真实浏览器矩阵。
+
+### 6.4 任务 7 完成记录（2026-08-28）
+
+- 新增 `shared/tags.js`，提供 Unicode NFKC、大小写/空白归一化、中英文/数字/hashtag 提取、stop words、去重、确定性排序及长度/数量上限；所有函数均为本地纯函数，不访问 DOM、storage、网络、Chrome API、模型、时间或随机数；
+- `shared/types.js` 新增唯一严格 `ContextTagProfileV1` 与 `CandidateTagProfileV1` 契约及 validator；标签限制和 stop words 只有一个共享常量来源；
+- `nativeTags` 保留平台展示标签，`normalizedTags` 保存比较形式，严格分栏且 validator 要求每个 native tag 都有对应 normalized tag；
+- `CandidateV1`、`SearchContextV1`、schemaVersion 2、消息 payload、Repository、Provider、评分、Runtime、Adapter、权限和 UI 均未改变；Task 8 的持久化和富化接线未提前实现；
+- 标签/共享类型/build 专项测试 37/37 通过；全仓 `node --test` 与 `npm test` 均为 371/371 通过；`npm run typecheck` 检查 88 个 JavaScript 文件通过；`npm run build` 的 build/release validation 通过；
+- A-1 只增加纯函数和 DTO，没有新增真实浏览器行为；本任务未把自动测试表述为 Chrome 手动验收。
 
 ## 7. 权限决策记录
 

@@ -1,15 +1,55 @@
 // @ts-check
 
-import {
-  TAG_LIMITS,
-  isCanonicalNativeTag,
-  isNormalizedTag,
-  normalizeNativeTags,
-  normalizeTag
-} from "./tags.js";
-
 /** The single version source for messages and Repository envelopes. */
 export const SCHEMA_VERSION = 2;
+
+/** The single limit source for tag DTOs and local extraction. */
+export const TAG_LIMITS = Object.freeze({
+  maxSourceCodePoints: 512,
+  maxTagCodePoints: 32,
+  maxTags: 12,
+  maxNativeTags: 12
+});
+
+/** A deliberately small, reviewable stop-word list. */
+export const TAG_STOP_WORDS = Object.freeze([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "the",
+  "to",
+  "with",
+  "与",
+  "为",
+  "从",
+  "到",
+  "及",
+  "和",
+  "在",
+  "是",
+  "的",
+  "了",
+  "这",
+  "那",
+  "或"
+]);
+
+const TAG_STOP_WORD_SET = new Set(TAG_STOP_WORDS);
+const TAG_CONTROL_OR_FORMAT_PATTERN = /[\p{Cc}\p{Cf}]+/gu;
+const TAG_UNSUPPORTED_CHARACTER_PATTERN = /[^\p{L}\p{N}_\-\s]+/gu;
 
 export const CONSIDERATION_REASON_CODES = Object.freeze({
   LONG_EXPOSURE: "LONG_EXPOSURE",
@@ -346,11 +386,62 @@ function isNonNegativeInteger(value) {
   return Number.isInteger(value) && value >= 0;
 }
 
+function sliceTagCodePoints(value) {
+  return Array.from(value).slice(0, TAG_LIMITS.maxTagCodePoints).join("");
+}
+
+function normalizeTagForValidation(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value
+    .normalize("NFKC")
+    .replace(TAG_CONTROL_OR_FORMAT_PATTERN, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .replace(/^[#＃]+/u, "")
+    .toLocaleLowerCase("und")
+    .replace(TAG_UNSUPPORTED_CHARACTER_PATTERN, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const limited = sliceTagCodePoints(normalized).trim();
+  return limited && !TAG_STOP_WORD_SET.has(limited) ? limited : null;
+}
+
+function normalizeNativeTagForValidation(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value
+    .normalize("NFKC")
+    .replace(TAG_CONTROL_OR_FORMAT_PATTERN, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const limited = sliceTagCodePoints(normalized).trim();
+  return normalizeTagForValidation(limited) ? limited : null;
+}
+
+function compareTagText(left, right) {
+  if (left === right) {
+    return 0;
+  }
+  return left < right ? -1 : 1;
+}
+
 function isNormalizedTagList(value) {
   return (
     Array.isArray(value) &&
     value.length <= TAG_LIMITS.maxTags &&
-    value.every(isNormalizedTag) &&
+    value.every(
+      (tag) =>
+        typeof tag === "string" && normalizeTagForValidation(tag) === tag
+    ) &&
     value.every((tag, index) => index === 0 || value[index - 1] < tag)
   );
 }
@@ -359,15 +450,24 @@ function isNativeTagList(value) {
   if (
     !Array.isArray(value) ||
     value.length > TAG_LIMITS.maxNativeTags ||
-    !value.every(isCanonicalNativeTag)
+    !value.every(
+      (tag) =>
+        typeof tag === "string" &&
+        normalizeNativeTagForValidation(tag) === tag
+    )
   ) {
     return false;
   }
 
-  const canonical = normalizeNativeTags(value);
-  return (
-    canonical.length === value.length &&
-    canonical.every((tag, index) => tag === value[index])
+  const normalizedKeys = value.map(normalizeTagForValidation);
+  return normalizedKeys.every(
+    (tag, index) =>
+      tag !== null &&
+      (index === 0 ||
+        compareTagText(
+          normalizedKeys[index - 1],
+          tag
+        ) < 0)
   );
 }
 
@@ -464,7 +564,7 @@ export function isCandidateTagProfileV1(value) {
 
   const normalizedTagSet = new Set(value.normalizedTags);
   return value.nativeTags.every((nativeTag) => {
-    const normalizedTag = normalizeTag(nativeTag);
+    const normalizedTag = normalizeTagForValidation(nativeTag);
     return normalizedTag !== null && normalizedTagSet.has(normalizedTag);
   });
 }
