@@ -43,9 +43,9 @@ export function createCandidateDiscoveryUseCase(repository) {
     /**
      * @param {object} payload
      */
-    async execute(payload) {
+    async execute(payload, owner) {
       try {
-        return await repository.mergeDiscoveredCandidates(payload);
+        return await repository.mergeDiscoveredCandidates(payload, owner);
       } catch (error) {
         if (error instanceof RepositoryVersionError) {
           throw new CandidateDiscoveryError(

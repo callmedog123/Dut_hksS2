@@ -934,6 +934,38 @@ export function createErrorResponseMessage(requestId, error) {
 }
 
 /**
+ * Return a correlated response for an obsolete or unknown message envelope.
+ * A v1 response keeps the refresh instruction readable by stale v1 scripts;
+ * unknown versions receive the current response envelope.
+ *
+ * @param {string} requestId
+ * @param {unknown} actualVersion
+ * @returns {ResponseMessage<never> | {
+ *   schemaVersion: 1,
+ *   requestId: string,
+ *   ok: false,
+ *   error: {code: string, message: string, retryable: boolean}
+ * }}
+ */
+export function createSchemaVersionUnsupportedResponse(
+  requestId,
+  actualVersion
+) {
+  const versionDescription =
+    actualVersion === 1
+      ? "This page is still using schemaVersion 1"
+      : `Unsupported schemaVersion: ${String(actualVersion)}`;
+  const response = createErrorResponseMessage(requestId, {
+    code: RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED,
+    message: `${versionDescription}; expected ${SCHEMA_VERSION}. Refresh the page before retrying.`,
+    retryable: false
+  });
+  return actualVersion === 1
+    ? { ...response, schemaVersion: 1 }
+    : response;
+}
+
+/**
  * @param {unknown} message
  * @returns {message is ResponseMessage<unknown>}
  */

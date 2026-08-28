@@ -5,6 +5,7 @@ import {
   RESPONSE_ERROR_CODES,
   SCHEMA_VERSION,
   createErrorResponseMessage,
+  createSchemaVersionUnsupportedResponse,
   createSuccessResponseMessage,
   isActiveContextQueryMessage,
   isActiveContextQueryResponse,
@@ -99,13 +100,13 @@ function createRequestError(requestId, code, message, retryable) {
  *   listMissedPaths: () => Promise<unknown[]>,
  *   deleteMissedPath?: (id: string) => Promise<boolean>,
  *   deleteAll?: () => Promise<boolean>,
- *   getActiveContext?: () => Promise<unknown>,
+ *   getActiveContextForTab?: (tabId: number) => Promise<unknown>,
  *   getSettings?: () => Promise<unknown>,
  *   listReencounters?: () => Promise<unknown[]>,
  *   recordReencounterFeedback?: (payload: object) => Promise<unknown>,
- *   recordReencounterShown?: (payload: object) => Promise<unknown>,
- *   mergeDiscoveredCandidates?: (payload: object) => Promise<unknown>,
- *   mergeCandidateSignalsSnapshot?: (payload: object) => Promise<unknown>
+ *   recordReencounterShown?: (payload: object, tabId?: number) => Promise<unknown>,
+ *   mergeDiscoveredCandidates?: (payload: object, owner?: object) => Promise<unknown>,
+ *   mergeCandidateSignalsSnapshot?: (payload: object, owner?: object) => Promise<unknown>
  *   saveSettings?: (settings: object) => Promise<boolean>
  * }} repository
  * @param {{
@@ -127,7 +128,7 @@ export function createMessageRouter(repository, options = {}) {
     throw new TypeError("Message Router options must be an object.");
   }
   const activeContextQueryUseCase = options.activeContextQueryUseCase ??
-    (typeof repository.getActiveContext === "function"
+    (typeof repository.getActiveContextForTab === "function"
       ? createActiveContextQueryUseCase(repository)
       : null);
   const dataDeleteAllUseCase = options.dataDeleteAllUseCase ??
@@ -258,10 +259,11 @@ export function createMessageRouter(repository, options = {}) {
   return Object.freeze({
     /**
      * @param {unknown} message
+     * @param {{sessionOwner?: object, activeTabId?: number}} [routingContext]
      * @returns {Promise<import("../shared/messages.js").ResponseMessage<unknown> | null>}
      */
-    async route(message) {
-      if (!isRecord(message)) {
+    async route(message, routingContext = {}) {
+      if (!isRecord(message) || !isRecord(routingContext)) {
         return null;
       }
       const isActiveContextQuery =
@@ -305,11 +307,9 @@ export function createMessageRouter(repository, options = {}) {
         return null;
       }
       if (message.schemaVersion !== SCHEMA_VERSION) {
-        return createRequestError(
+        return createSchemaVersionUnsupportedResponse(
           message.requestId,
-          RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED,
-          `Unsupported schemaVersion: ${String(message.schemaVersion)}.`,
-          false
+          message.schemaVersion
         );
       }
       const isValidRequest = isActiveContextQuery
@@ -352,7 +352,9 @@ export function createMessageRouter(repository, options = {}) {
           );
         }
         try {
-          const activeContext = await activeContextQueryUseCase.execute();
+          const activeContext = await activeContextQueryUseCase.execute(
+            routingContext.activeTabId
+          );
           const response = createSuccessResponseMessage(
             message.requestId,
             activeContext
@@ -542,7 +544,8 @@ export function createMessageRouter(repository, options = {}) {
         }
         try {
           const finalization = await sessionFinalizeUseCase.execute(
-            message.payload
+            message.payload,
+            routingContext.sessionOwner
           );
           const response = createSuccessResponseMessage(
             message.requestId,
@@ -584,7 +587,10 @@ export function createMessageRouter(repository, options = {}) {
           );
         }
         try {
-          const update = await signalsUpdateUseCase.execute(message.payload);
+          const update = await signalsUpdateUseCase.execute(
+            message.payload,
+            routingContext.sessionOwner
+          );
           const response = createSuccessResponseMessage(
             message.requestId,
             update
@@ -626,7 +632,8 @@ export function createMessageRouter(repository, options = {}) {
         }
         try {
           const discovery = await candidateDiscoveryUseCase.execute(
-            message.payload
+            message.payload,
+            routingContext.sessionOwner
           );
           const response = createSuccessResponseMessage(
             message.requestId,
@@ -752,7 +759,10 @@ export function createMessageRouter(repository, options = {}) {
           );
         }
         try {
-          const shown = await reencounterShownUseCase.execute(message.payload);
+          const shown = await reencounterShownUseCase.execute(
+            message.payload,
+            routingContext.activeTabId
+          );
           const response = createSuccessResponseMessage(
             message.requestId,
             shown

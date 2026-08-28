@@ -25,6 +25,7 @@
     {
       "resources": [
         "content/bilibiliRuntime.js",
+        "content/siteRuntime.js",
         "content/adapters/bilibiliSearchAdapter.js",
         "content/candidateBinding.js",
         "content/eventCollector/click.js",

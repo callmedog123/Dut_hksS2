@@ -112,9 +112,9 @@ Manifest 没有声明 `storage`、`tabs`、`scripting`、`activeTab`、`cookies`
 
 ```text
 background/   Service Worker 接线、消息路由、会话结算、评分和重逢用例
-content/      Site Adapter、Candidate/Element 绑定、采集器、Demo/Bilibili Runtime
+content/      通用 Site Runtime、站点 Adapter、Candidate/Element 绑定、采集器和 Demo/Bilibili 入口
 demo/         扩展内部可重复 Demo 页面
-shared/       schemaVersion=1 的领域类型、消息验证和 URL 规范化
+shared/       schemaVersion=2 的领域类型、消息验证和 URL 规范化
 storage/      Repository 与 IndexedDB 适配器
 sidepanel/    只消费后台 DTO 的 Side Panel UI
 scripts/      语法、构建和发布静态校验
@@ -163,4 +163,3 @@ node --test
 - Bilibili 仅是当前唯一的受支持页面环境；扩展不调用 Bilibili API，也不上传采集数据。
 - 开发过程中使用了 AI 编程助手辅助部分代码与文档生成/审查；团队仍需对提交内容、测试结果和演示表述负责。扩展运行时不调用 AI。
 - 发布压缩包、Git tag、提交和推送必须由团队确认后执行；本步骤只冻结源码、文档和校验入口。
-

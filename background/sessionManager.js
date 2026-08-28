@@ -4,13 +4,17 @@ import {
   CONSIDERATION_CLASSIFICATIONS,
   calculateConsideration
 } from "./consideration.js";
+import { createSessionOwnerKey } from "../storage/repository.js";
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.length > 0;
 }
 
-function createResultId(sessionId, candidateId) {
-  return `${encodeURIComponent(sessionId)}:${encodeURIComponent(candidateId)}`;
+function createResultId(sessionId, candidateId, owner) {
+  const sessionIdentity = owner === undefined || owner === null
+    ? encodeURIComponent(sessionId)
+    : encodeURIComponent(createSessionOwnerKey(owner));
+  return `${sessionIdentity}:${encodeURIComponent(candidateId)}`;
 }
 
 function assertRepository(repository) {
@@ -69,7 +73,7 @@ export function createSessionManager(repository) {
      * @param {string} candidateId
      * @param {number} chosenAt
      */
-    async recordCandidateChosen(sessionId, candidateId, chosenAt) {
+    async recordCandidateChosen(sessionId, candidateId, chosenAt, owner) {
       if (!isNonEmptyString(sessionId) || !isNonEmptyString(candidateId)) {
         throw new TypeError(
           "sessionId and candidateId must be non-empty strings."
@@ -86,7 +90,8 @@ export function createSessionManager(repository) {
       const updated = await repository.markCandidateChosen(
         sessionId,
         candidateId,
-        chosenAt
+        chosenAt,
+        owner
       );
       return { sessionId, candidateId, updated };
     },
@@ -97,7 +102,7 @@ export function createSessionManager(repository) {
      * @param {string} sessionId
      * @param {number} [finalizedAt]
      */
-    async finalizeSession(sessionId, finalizedAt = Date.now()) {
+    async finalizeSession(sessionId, finalizedAt = Date.now(), owner) {
       if (!isNonEmptyString(sessionId)) {
         throw new TypeError("sessionId must be a non-empty string.");
       }
@@ -110,7 +115,7 @@ export function createSessionManager(repository) {
       }
 
       const existingMarker =
-        await repository.getSessionFinalization(sessionId);
+        await repository.getSessionFinalization(sessionId, owner);
       if (existingMarker !== null) {
         const records = await loadFinalizedRecords(repository, existingMarker);
         return {
@@ -121,7 +126,7 @@ export function createSessionManager(repository) {
         };
       }
 
-      const session = await repository.getSession(sessionId);
+      const session = await repository.getSession(sessionId, owner);
       if (session === null) {
         throw new Error(`Session not found: ${sessionId}`);
       }
@@ -130,7 +135,7 @@ export function createSessionManager(repository) {
       const missedPaths = [];
       for (const entry of session.candidates) {
         const consideration = calculateConsideration(entry.signals);
-        const id = createResultId(sessionId, entry.candidate.id);
+        const id = createResultId(sessionId, entry.candidate.id, owner);
 
         if (entry.signals.clicked) {
           chosen.push({
@@ -158,12 +163,15 @@ export function createSessionManager(repository) {
         }
       }
 
-      const persisted = await repository.finalizeSessionAtomically({
-        sessionId,
-        finalizedAt,
-        chosen,
-        missedPaths
-      });
+      const persisted = await repository.finalizeSessionAtomically(
+        {
+          sessionId,
+          finalizedAt,
+          chosen,
+          missedPaths
+        },
+        owner
+      );
       if (!persisted.created) {
         const records = await loadFinalizedRecords(
           repository,

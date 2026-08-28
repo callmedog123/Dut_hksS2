@@ -107,6 +107,13 @@ function createDiscoveryCandidate(overrides = {}) {
   };
 }
 
+const ROUTING_OWNER = Object.freeze({
+  tabId: 7,
+  documentId: "document-1",
+  frameId: 0,
+  sessionId: "session-1"
+});
+
 function createUpdateSignals(overrides = {}) {
   return {
     candidateId: "candidate-1",
@@ -658,7 +665,9 @@ test("routes ACTIVE_CONTEXT_QUERY for unavailable and available contexts", async
     "request-active-unavailable"
   );
 
-  const unavailable = await router.route(unavailableRequest);
+  const unavailable = await router.route(unavailableRequest, {
+    activeTabId: ROUTING_OWNER.tabId
+  });
   assert.equal(isActiveContextQueryResponse(unavailable), true);
   assert.deepEqual(unavailable, {
     schemaVersion: SCHEMA_VERSION,
@@ -670,16 +679,21 @@ test("routes ACTIVE_CONTEXT_QUERY for unavailable and available contexts", async
     }
   });
 
-  await repository.mergeDiscoveredCandidates({
-    sessionId: "session-1",
-    context: createDiscoveryContext(),
-    candidates: [createDiscoveryCandidate()],
-    discoveredAt: 200
-  });
+  await repository.mergeDiscoveredCandidates(
+    {
+      sessionId: "session-1",
+      context: createDiscoveryContext(),
+      candidates: [createDiscoveryCandidate()],
+      discoveredAt: 200
+    },
+    ROUTING_OWNER
+  );
   const availableRequest = createActiveContextQueryMessage(
     "request-active-available"
   );
-  const available = await router.route(availableRequest);
+  const available = await router.route(availableRequest, {
+    activeTabId: ROUTING_OWNER.tabId
+  });
 
   assert.equal(isActiveContextQueryResponse(available), true);
   assert.deepEqual(available, {
@@ -691,7 +705,12 @@ test("routes ACTIVE_CONTEXT_QUERY for unavailable and available contexts", async
       context: createDiscoveryContext()
     }
   });
-  assert.deepEqual(await router.route(availableRequest), available);
+  assert.deepEqual(
+    await router.route(availableRequest, {
+      activeTabId: ROUTING_OWNER.tabId
+    }),
+    available
+  );
 });
 
 test("rejects invalid ACTIVE_CONTEXT_QUERY payload and version before execution", async () => {
@@ -740,13 +759,13 @@ test("maps ACTIVE_CONTEXT_QUERY storage failure and echoes requestId", async () 
     async listMissedPaths() {
       return [];
     },
-    async getActiveContext() {
+    async getActiveContextForTab() {
       throw new Error("simulated storage failure");
     }
   });
   const request = createActiveContextQueryMessage("request-active-storage");
 
-  const response = await router.route(request);
+  const response = await router.route(request, { activeTabId: 7 });
 
   assert.equal(response.requestId, request.requestId);
   assert.deepEqual(response.error, {
@@ -816,7 +835,7 @@ test("rejects an unknown schemaVersion before reading storage", async () => {
     ok: false,
     error: {
       code: RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED,
-      message: `Unsupported schemaVersion: ${SCHEMA_VERSION + 1}.`,
+      message: `Unsupported schemaVersion: ${SCHEMA_VERSION + 1}; expected ${SCHEMA_VERSION}. Refresh the page before retrying.`,
       retryable: false
     }
   });
