@@ -5,6 +5,7 @@ import test from "node:test";
 import { createMessageRouter } from "../../background/messageRouter.js";
 import { createSessionFinalizeUseCase } from "../../background/sessionFinalize.js";
 import { createSessionManager } from "../../background/sessionManager.js";
+import { createTagEnrichmentCoordinator } from "../../background/tagEnrichment.js";
 import { createSiteRuntime } from "../../content/siteRuntime.js";
 import {
   MESSAGE_TYPES,
@@ -31,13 +32,17 @@ class EventTargetHarness {
   }
 }
 
-function createBackend() {
+function createBackend({ withTagEnrichment = false } = {}) {
   const repository = createRepository(
     createTransactionalMemoryStorageAdapter()
   );
   const sessionManager = createSessionManager(repository);
+  const tagEnrichmentCoordinator = withTagEnrichment
+    ? createTagEnrichmentCoordinator(repository, null)
+    : null;
   const router = createMessageRouter(repository, {
-    sessionFinalizeUseCase: createSessionFinalizeUseCase(sessionManager)
+    sessionFinalizeUseCase: createSessionFinalizeUseCase(sessionManager),
+    ...(tagEnrichmentCoordinator === null ? {} : { tagEnrichmentCoordinator })
   });
   const messages = [];
 
@@ -164,6 +169,324 @@ test("generic Site Runtime composes an injected Adapter and shared collectors", 
   assert.equal(adapterCleanupCount, 1);
   assert.equal(fixture.document.listenerCount("click"), 0);
   assert.equal(fixture.document.listenerCount("auxclick"), 0);
+});
+
+test("Site Runtime reports native tags from an Adapter that implements extractCandidateTags()", async () => {
+  const fixture = createBilibiliDocumentFixture({
+    url: "https://example.test/search?q=robotics",
+    candidates: [
+      {
+        title: "Generic result",
+        href: "https://example.test/result/1"
+      }
+    ]
+  });
+  const candidate = {
+    id: "test:candidate-1",
+    url: "https://example.test/result/1",
+    title: "Generic result",
+    source: "test-search",
+    rank: 1,
+    sessionId: "test-session-tags"
+  };
+  const context = {
+    query: "robotics",
+    source: "test-search",
+    timestamp: 100,
+    keywords: ["robotics"]
+  };
+  const binding = { candidate, element: fixture.cards[0] };
+  const backend = createBackend();
+  const intersection = createIntersectionObserverHarness();
+  const pageLifecycle = new EventTargetHarness();
+
+  const runtime = createSiteRuntime({
+    document: fixture.document,
+    pageLifecycle,
+    siteLabel: "Test Site",
+    sendMessage(message) {
+      return backend.sendMessage(message);
+    },
+    readUrl: () => new URL(fixture.document.location.href),
+    wallNow: () => 1_000,
+    IntersectionObserver: intersection.IntersectionObserver,
+    createAdapter({ onCandidateBound, onCandidateUnbound }) {
+      return {
+        canHandle(url) {
+          return url.hostname === "example.test";
+        },
+        getContext() {
+          return context;
+        },
+        extractCandidates() {
+          return [candidate];
+        },
+        extractCandidateTags() {
+          return [
+            { candidateId: "test:candidate-1", nativeTags: ["#AI", "机器人"] }
+          ];
+        },
+        observeChanges() {
+          onCandidateBound(binding);
+          return () => onCandidateUnbound(binding);
+        }
+      };
+    }
+  });
+
+  await runtime.start();
+  await runtime.whenIdle();
+
+  assert.equal(
+    backend.messages.some(
+      (message) => message.type === MESSAGE_TYPES.CANDIDATE_TAGS_DISCOVERED
+    ),
+    true
+  );
+  const stored = await backend.repository.getCandidateTagProfile(
+    "test-session-tags",
+    "test:candidate-1"
+  );
+  assert.notEqual(stored, null);
+  assert.deepEqual(stored.nativeTags, ["#AI", "机器人"]);
+  // normalizedTags merges the native tags with local tags extracted from the
+  // Candidate title ("Generic result"), matching Task 7/8 behavior.
+  assert.deepEqual(stored.normalizedTags, ["ai", "generic", "result", "机器人"]);
+
+  runtime.cleanup();
+});
+
+test("real Runtime to Router to Repository persists local fallback profiles", async () => {
+  const fixture = createBilibiliDocumentFixture({
+    url: "https://example.test/search?q=robotics",
+    candidates: [{ title: "Robotics result", href: "https://example.test/result/1" }]
+  });
+  const candidate = {
+    id: "test:candidate-fallback",
+    url: "https://example.test/result/1",
+    title: "Robotics result",
+    source: "test-search",
+    rank: 1,
+    sessionId: "test-session-fallback"
+  };
+  const context = {
+    query: "robotics",
+    source: "test-search",
+    timestamp: 100,
+    keywords: ["robotics"]
+  };
+  const binding = { candidate, element: fixture.cards[0] };
+  const backend = createBackend({ withTagEnrichment: true });
+  const intersection = createIntersectionObserverHarness();
+  const pageLifecycle = new EventTargetHarness();
+  const runtime = createSiteRuntime({
+    document: fixture.document,
+    pageLifecycle,
+    siteLabel: "Test Site",
+    sendMessage(message) {
+      return backend.sendMessage(message);
+    },
+    readUrl: () => new URL(fixture.document.location.href),
+    wallNow: () => 1_000,
+    performanceNow: () => 0,
+    IntersectionObserver: intersection.IntersectionObserver,
+    createAdapter({ onCandidateBound, onCandidateUnbound }) {
+      return {
+        canHandle(url) {
+          return url.hostname === "example.test";
+        },
+        getContext() {
+          return context;
+        },
+        extractCandidates() {
+          return [candidate];
+        },
+        observeChanges() {
+          onCandidateBound(binding);
+          return () => onCandidateUnbound(binding);
+        }
+      };
+    }
+  });
+
+  await runtime.start();
+  await runtime.whenIdle();
+
+  const stored = await backend.repository.getCandidateTagProfile(
+    candidate.sessionId,
+    candidate.id
+  );
+  assert.notEqual(stored, null);
+  assert.deepEqual(stored.nativeTags, []);
+  assert.deepEqual(stored.normalizedTags, ["result", "robotics"]);
+  assert.notEqual(
+    await backend.repository.getContextTagProfile(candidate.sessionId),
+    null
+  );
+
+  const finalized = await runtime.finalizeCurrentSession("fallback integration");
+  assert.equal(finalized.alreadyFinalized, false);
+  const selected = await backend.repository.getSessionSelectedTagProfile(
+    candidate.sessionId
+  );
+  assert.deepEqual(selected, {
+    sessionId: candidate.sessionId,
+    selectedCandidateCount: 0,
+    tags: []
+  });
+
+  runtime.cleanup();
+});
+
+test("Site Runtime discovery is unaffected when the Adapter has no extractCandidateTags()", async () => {
+  const fixture = createBilibiliDocumentFixture({
+    url: "https://example.test/search?q=robotics",
+    candidates: [
+      {
+        title: "Generic result",
+        href: "https://example.test/result/1"
+      }
+    ]
+  });
+  const candidate = {
+    id: "test:candidate-1",
+    url: "https://example.test/result/1",
+    title: "Generic result",
+    source: "test-search",
+    rank: 1,
+    sessionId: "test-session-no-tags"
+  };
+  const context = {
+    query: "robotics",
+    source: "test-search",
+    timestamp: 100,
+    keywords: ["robotics"]
+  };
+  const binding = { candidate, element: fixture.cards[0] };
+  const backend = createBackend();
+  const intersection = createIntersectionObserverHarness();
+  const pageLifecycle = new EventTargetHarness();
+
+  const runtime = createSiteRuntime({
+    document: fixture.document,
+    pageLifecycle,
+    siteLabel: "Test Site",
+    sendMessage(message) {
+      return backend.sendMessage(message);
+    },
+    readUrl: () => new URL(fixture.document.location.href),
+    wallNow: () => 1_000,
+    IntersectionObserver: intersection.IntersectionObserver,
+    createAdapter({ onCandidateBound, onCandidateUnbound }) {
+      return {
+        canHandle(url) {
+          return url.hostname === "example.test";
+        },
+        getContext() {
+          return context;
+        },
+        extractCandidates() {
+          return [candidate];
+        },
+        observeChanges() {
+          onCandidateBound(binding);
+          return () => onCandidateUnbound(binding);
+        }
+      };
+    }
+  });
+
+  await runtime.start();
+  await runtime.whenIdle();
+
+  assert.equal(runtime.lifecycle, "collecting");
+  assert.equal(
+    backend.messages.some(
+      (message) => message.type === MESSAGE_TYPES.CANDIDATE_TAGS_DISCOVERED
+    ),
+    false
+  );
+
+  runtime.cleanup();
+});
+
+test("Site Runtime drops native tags for Candidates outside the accepted batch", async () => {
+  const fixture = createBilibiliDocumentFixture({
+    url: "https://example.test/search?q=robotics",
+    candidates: [
+      {
+        title: "Generic result",
+        href: "https://example.test/result/1"
+      }
+    ]
+  });
+  const candidate = {
+    id: "test:candidate-1",
+    url: "https://example.test/result/1",
+    title: "Generic result",
+    source: "test-search",
+    rank: 1,
+    sessionId: "test-session-foreign-tags"
+  };
+  const context = {
+    query: "robotics",
+    source: "test-search",
+    timestamp: 100,
+    keywords: ["robotics"]
+  };
+  const binding = { candidate, element: fixture.cards[0] };
+  const backend = createBackend();
+  const intersection = createIntersectionObserverHarness();
+  const pageLifecycle = new EventTargetHarness();
+
+  const runtime = createSiteRuntime({
+    document: fixture.document,
+    pageLifecycle,
+    siteLabel: "Test Site",
+    sendMessage(message) {
+      return backend.sendMessage(message);
+    },
+    readUrl: () => new URL(fixture.document.location.href),
+    wallNow: () => 1_000,
+    IntersectionObserver: intersection.IntersectionObserver,
+    createAdapter({ onCandidateBound, onCandidateUnbound }) {
+      return {
+        canHandle(url) {
+          return url.hostname === "example.test";
+        },
+        getContext() {
+          return context;
+        },
+        extractCandidates() {
+          return [candidate];
+        },
+        extractCandidateTags() {
+          return [
+            { candidateId: "test:candidate-1", nativeTags: ["#AI"] },
+            { candidateId: "test:candidate-not-discovered", nativeTags: ["#x"] }
+          ];
+        },
+        observeChanges() {
+          onCandidateBound(binding);
+          return () => onCandidateUnbound(binding);
+        }
+      };
+    }
+  });
+
+  await runtime.start();
+  await runtime.whenIdle();
+
+  const tagMessage = backend.messages.find(
+    (message) => message.type === MESSAGE_TYPES.CANDIDATE_TAGS_DISCOVERED
+  );
+  assert.notEqual(tagMessage, undefined);
+  assert.deepEqual(
+    tagMessage.payload.tags.map((entry) => entry.candidateId),
+    ["test:candidate-1"]
+  );
+
+  runtime.cleanup();
 });
 
 test("Site Runtime source contains no Bilibili Adapter, URL, or selector", () => {

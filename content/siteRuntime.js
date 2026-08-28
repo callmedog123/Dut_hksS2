@@ -2,9 +2,11 @@
 
 import {
   RESPONSE_ERROR_CODES,
+  createCandidateTagsDiscoveredMessage,
   createCandidatesDiscoveredMessage,
   createSessionFinalizeMessage,
   createSignalsUpdatedMessage,
+  isCandidateTagsDiscoveredResponse,
   isCandidatesDiscoveredResponse,
   isResponseMessage,
   isSessionFinalizeResponse,
@@ -793,7 +795,64 @@ export function createSiteRuntime(options = {}) {
       `${siteLabel} Runtime 正在采集 ${response.data.totalCandidateCount} 个候选项。`,
       response.data
     );
+    reportCandidateTags(activeSession);
     return response.data;
+  }
+
+  /**
+   * Send DOM-visible native tags for the currently accepted Candidates when
+   * the Adapter implements the optional extractCandidateTags() capability.
+   * Adapters without it (Demo, and any Adapter mid-rollout) are unaffected:
+   * the local title/query fallback in Task 7/8 already covers that case.
+   * Failures never affect discovery, signals, or finalize.
+   */
+  function reportCandidateTags(session) {
+    if (typeof adapter.extractCandidateTags !== "function") {
+      return;
+    }
+
+    let tags;
+    try {
+      tags = adapter.extractCandidateTags(runtimeDocument);
+    } catch {
+      // A DOM tag read is best-effort; the Repository-side local fallback
+      // already covers a failed or unimplemented extraction.
+      return;
+    }
+    if (!Array.isArray(tags) || tags.length === 0) {
+      return;
+    }
+
+    const ownedTags = tags.filter(
+      (entry) =>
+        isRecord(entry) &&
+        session.acceptedCandidateIds.has(entry.candidateId)
+    );
+    if (ownedTags.length === 0) {
+      return;
+    }
+
+    let message;
+    try {
+      message = createCandidateTagsDiscoveredMessage(
+        session.sessionId,
+        ownedTags,
+        readWallNow()
+      );
+    } catch {
+      // Malformed native tags (bad length, duplicates, invalid characters)
+      // must not block discovery, signals, or finalize.
+      return;
+    }
+
+    void enqueueMessage(
+      message,
+      isCandidateTagsDiscoveredResponse,
+      session
+    ).catch(() => {
+      // A tag batch is a best-effort enrichment write; report but never
+      // surface as a Runtime-degrading error.
+    });
   }
 
   async function reconcileCurrentPage(reason) {

@@ -17,6 +17,7 @@ import {
   REENCOUNTER_FEEDBACK_OUTCOMES,
   createActiveContextQueryMessage,
   createMissedPathDeleteMessage,
+  createCandidateTagsDiscoveredMessage,
   createCandidatesDiscoveredMessage,
   createDataDeleteAllMessage,
   createMissedPathsQueryMessage,
@@ -27,6 +28,7 @@ import {
   createSettingsUpdateMessage,
   createSignalsUpdatedMessage,
   isActiveContextQueryResponse,
+  isCandidateTagsDiscoveredResponse,
   isCandidatesDiscoveredResponse,
   isDataDeleteAllResponse,
   isMissedPathsQueryResponse,
@@ -199,6 +201,128 @@ test("routes CANDIDATES_DISCOVERED and persists an idempotent Session", async ()
     updatedAt: 200
   });
   assert.equal((await repository.getSession("session-1")).candidates.length, 1);
+});
+
+test("routes CANDIDATE_TAGS_DISCOVERED and persists an idempotent tag batch", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const router = createMessageRouter(repository);
+  await router.route(
+    createCandidatesDiscoveredMessage(
+      "session-1",
+      createDiscoveryContext(),
+      [createDiscoveryCandidate()],
+      200,
+      "request-discovery-for-tags"
+    ),
+    { sessionOwner: ROUTING_OWNER }
+  );
+  const request = createCandidateTagsDiscoveredMessage(
+    "session-1",
+    [{ candidateId: "candidate-1", nativeTags: ["#AI"] }],
+    300,
+    "request-tags-success"
+  );
+
+  const first = await router.route(request, { sessionOwner: ROUTING_OWNER });
+  assert.equal(isCandidateTagsDiscoveredResponse(first), true);
+  assert.deepEqual(first, {
+    schemaVersion: SCHEMA_VERSION,
+    requestId: request.requestId,
+    ok: true,
+    data: {
+      sessionId: "session-1",
+      acceptedCandidateIds: ["candidate-1"],
+      storedCandidateCount: 1
+    }
+  });
+
+  const repeated = await router.route(request, {
+    sessionOwner: ROUTING_OWNER
+  });
+  assert.deepEqual(repeated.data, first.data);
+  const stored = await repository.getCandidateTagProfile(
+    "session-1",
+    "candidate-1",
+    ROUTING_OWNER
+  );
+  assert.deepEqual(stored.nativeTags, ["#AI"]);
+});
+
+test("rejects invalid CANDIDATE_TAGS_DISCOVERED payload and version before persistence", async () => {
+  let executionCount = 0;
+  const router = createMessageRouter(
+    { async listMissedPaths() { return []; } },
+    {
+      candidateTagsUpdateUseCase: {
+        async execute() {
+          executionCount += 1;
+          return {};
+        }
+      }
+    }
+  );
+  const valid = createCandidateTagsDiscoveredMessage(
+    "session-1",
+    [{ candidateId: "candidate-1", nativeTags: [] }],
+    300,
+    "request-tags-validation"
+  );
+
+  const invalidPayload = await router.route({
+    ...valid,
+    payload: { ...valid.payload, tags: [] }
+  });
+  assert.equal(executionCount, 0);
+  assert.deepEqual(invalidPayload.error, {
+    code: RESPONSE_ERROR_CODES.INVALID_REQUEST,
+    message: "Invalid CANDIDATE_TAGS_DISCOVERED payload.",
+    retryable: false
+  });
+
+  const invalidVersion = await router.route({
+    ...valid,
+    schemaVersion: SCHEMA_VERSION + 1
+  });
+  assert.equal(executionCount, 0);
+  assert.equal(
+    invalidVersion.error.code,
+    RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED
+  );
+});
+
+test("rejects a Candidate tags batch for a Candidate not in the owned Session", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const router = createMessageRouter(repository);
+  await router.route(
+    createCandidatesDiscoveredMessage(
+      "session-1",
+      createDiscoveryContext(),
+      [createDiscoveryCandidate()],
+      200,
+      "request-discovery-for-tags-conflict"
+    ),
+    { sessionOwner: ROUTING_OWNER }
+  );
+
+  const response = await router.route(
+    createCandidateTagsDiscoveredMessage(
+      "session-1",
+      [{ candidateId: "candidate-not-in-session", nativeTags: [] }],
+      300,
+      "request-tags-conflict"
+    ),
+    { sessionOwner: ROUTING_OWNER }
+  );
+
+  assert.equal(response.ok, false);
+  assert.equal(
+    response.error.code,
+    RESPONSE_ERROR_CODES.CANDIDATE_TAGS_CONFLICT
+  );
 });
 
 test("rejects invalid discovery payload and version before persistence", async () => {
@@ -1551,6 +1675,44 @@ test("paused Settings block collection writes but keep queries and deletes avail
   const resumed = await router.route(discovery);
   assert.equal(resumed.ok, true);
   assert.equal((await repository.listSessions()).length, 1);
+});
+
+test("paused Settings block Candidate tag writes", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const router = createMessageRouter(repository);
+  await router.route(
+    createCandidatesDiscoveredMessage(
+      "session-1",
+      createDiscoveryContext(),
+      [createDiscoveryCandidate()],
+      200,
+      "request-tags-pause-discovery"
+    ),
+    { sessionOwner: ROUTING_OWNER }
+  );
+  await repository.saveSettings({ ...DEFAULT_SETTINGS_V1, enabled: false });
+
+  const blocked = await router.route(
+    createCandidateTagsDiscoveredMessage(
+      "session-1",
+      [{ candidateId: "candidate-1", nativeTags: ["#AI"] }],
+      300,
+      "request-tags-paused"
+    ),
+    { sessionOwner: ROUTING_OWNER }
+  );
+
+  assert.equal(blocked.error.code, RESPONSE_ERROR_CODES.COLLECTION_PAUSED);
+  assert.equal(
+    await repository.getCandidateTagProfile(
+      "session-1",
+      "candidate-1",
+      ROUTING_OWNER
+    ),
+    null
+  );
 });
 
 test("routes DATA_DELETE_ALL idempotently and preserves Settings", async () => {

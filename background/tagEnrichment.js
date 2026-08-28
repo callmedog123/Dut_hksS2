@@ -262,9 +262,24 @@ export function createTagEnrichmentCoordinator(
       const { candidate, signals } = entry;
       const sessionKey = sessionKeyFor(candidate.sessionId, owner);
       const eligible = isEligibleForTagEnrichment(signals);
-      let nativeTags = null;
+      const existingProfile = await repository.getCandidateTagProfile(
+        candidate.sessionId,
+        candidate.id,
+        owner
+      );
+      // An empty nativeTags array is a persisted local fallback, not a cached
+      // provider success. Keep the candidate eligible for a later lookup when
+      // a subsequent signal crosses the approved threshold.
+      let nativeTags =
+        existingProfile?.nativeTags?.length > 0
+          ? existingProfile.nativeTags
+          : null;
 
-      if (eligible && reserveSessionSlot(sessionKey, candidate.id)) {
+      if (
+        nativeTags === null &&
+        eligible &&
+        reserveSessionSlot(sessionKey, candidate.id)
+      ) {
         nativeTags = await requestNativeTags(sessionKey, candidate);
       }
 

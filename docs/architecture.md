@@ -18,6 +18,8 @@ sequenceDiagram
   Runtime->>Worker: CANDIDATES_DISCOVERED
   Runtime->>Worker: SIGNALS_UPDATED / CANDIDATE_CHOSEN
   Worker->>Repo: 幂等合并 Session 与聚合快照
+  Runtime->>Worker: CANDIDATE_TAGS_DISCOVERED（可选，仅 Adapter 实现 extractCandidateTags 时）
+  Worker->>Repo: 按 Session Owner 写入 CandidateTagProfile
   Runtime->>Worker: SESSION_FINALIZE
   Worker->>Repo: 原子写 Chosen / Missed Path / finalization marker
   Panel->>Worker: MISSED_PATHS_QUERY / ACTIVE_CONTEXT_QUERY
@@ -39,7 +41,7 @@ sequenceDiagram
 
 | 模块 | 当前职责 | 不承担的职责 |
 | --- | --- | --- |
-| Site Adapter | 判断页面、提取 `Candidate`/`SearchContext`、绑定卡片 Element、观察动态结果 | 评分、存储、Chrome 消息、UI |
+| Site Adapter | 判断页面、提取 `Candidate`/`SearchContext`、绑定卡片 Element、观察动态结果；可选实现 `extractCandidateTags()` 读取 DOM 可见原生标签 | 评分、存储、Chrome 消息、UI |
 | Event Collector | 聚合可见时长、Hover 时长/次数、回看次数、点击 | 键盘/表单采集、完整鼠标轨迹、直接存储 |
 | Site/Demo Runtime | 管理会话和绑定生命周期，发送严格消息，处理 SPA/页面退出结算 | 业务评分、IndexedDB、Side Panel 渲染 |
 | Message Router / Use Cases | 校验消息、检查暂停状态、调用业务用例、返回统一响应 | 站点 DOM/选择器、UI 状态 |

@@ -6,10 +6,10 @@ The Unclicked 当前唯一共享契约版本是 `SCHEMA_VERSION = 2`。领域校
 
 | 对象 | 保存的最小字段 | 生命周期/用途 |
 | --- | --- | --- |
-| `CandidateV1` | `id`、规范化 `url`、`title`、`source`、`rank`、`sessionId` | Adapter 输出；不含 Element |
+| `CandidateV1` | `id`、规范化 `url`、`title`、`source`、`rank`、`sessionId`、成对可选 `contentType`/`layoutType` | Adapter 输出；不含 Element |
 | `SearchContextV1` | `query`、`source`、`timestamp`、可选 `keywords` | 会话与重逢的最小情境 |
-| `ContextTagProfileV1` | `sessionId`、稳定排序的 `normalizedTags` | 由搜索词本地提取；当前只生成 DTO，不持久化 |
-| `CandidateTagProfileV1` | `candidateId`、`sessionId`、`nativeTags`、`normalizedTags` | 标题本地标签与平台标签的独立视图；当前只生成 DTO，不持久化 |
+| `ContextTagProfileV1` | `sessionId`、稳定排序的 `normalizedTags` | 由搜索词本地提取；任务 8 起按 Session Owner 持久化 |
+| `CandidateTagProfileV1` | `candidateId`、`sessionId`、`nativeTags`、`normalizedTags` | 标题本地标签与平台标签的独立视图；任务 8 起按 Session Owner 持久化 |
 | `CandidateSignalsV1` | `candidateId`、`sessionId`、`visibleMs`、`hoverMs`、`hoverCount`、`returnCount`、`clicked` | 候选级累计快照，不是原始事件流 |
 | `MissedPathV1` | Candidate、Context、`score`、`reasons`、`status`、`createdAt` | 未点击且达到考虑阈值的持久化结果 |
 | Chosen | Candidate、Context、`chosenAt` | 已点击候选；结算时绝不进入 Missed Path |
@@ -18,6 +18,74 @@ The Unclicked 当前唯一共享契约版本是 `SCHEMA_VERSION = 2`。领域校
 | `SettingsV1` | `enabled`、allowlist/blocklist、两个阈值、`demoMode` | 当前 UI 只修改 `enabled`；清空业务数据时保留 |
 
 `Candidate + Element` 绑定不是领域 DTO。Element 只存在于页面内存的 WeakMap/Map 中，不能进入消息、JSON 或 Repository。
+
+## 多平台共享契约（步骤 5 冻结）
+
+`platform`、`contentType`、`layoutType`、`nativeTags` 四个概念分属不同契约层，不得由各站点线分别发明：
+
+| 概念 | 归属 | 是否持久化 | 派生/来源 |
+| --- | --- | --- | --- |
+| `platform` | 不进入任何契约字段 | 否 | `shared/types.js` 的 `resolvePlatformFromSource(source)` 纯函数，按精确 `source` 字符串映射到 `PLATFORMS` 枚举；未知 source 返回明确的 `PLATFORMS.UNKNOWN`，不做子串或模糊猜测 |
+| `contentType` | `CandidateV1` 可选字段 | 是，随 Candidate/MissedPath/Chosen 持久化 | Adapter 在 `extractCandidates()` 中按站点规则赋值 |
+| `layoutType` | `CandidateV1` 可选字段 | 是 | 同上 |
+| `nativeTags` | 不属于 `CandidateV1`；属于 `CandidateTagProfileV1` | 是，独立 `tag-candidate` 记录 | Adapter 可选的 `extractCandidateTags()`，或任务 8 的 Provider 富化 |
+
+`CandidateV1.contentType` 与 `CandidateV1.layoutType` 是一对：必须同时出现或同时缺失，`isCandidateV1` 用 `Object.hasOwn` 先检查两者一致，再要求二者都是合法枚举值。只有其中一个字段会被判定为无效数据。**缺失只允许用于兼容任务 8 之前写入的历史 v2 记录**；步骤 5 完成后，Bilibili、知乎、抖音三个真实站点新产生的 Candidate 都必须填写这两个字段。`SCHEMA_VERSION` 保持 2，历史缺字段记录继续有效，不做批量迁移。
+
+枚举值（`shared/types.js`）：
+
+```text
+PLATFORMS      = BILIBILI | ZHIHU | DOUYIN | LOCAL_DEMO | UNKNOWN
+CONTENT_TYPES  = VIDEO | IMAGE_POST | QUESTION | ANSWER | ARTICLE
+LAYOUT_TYPES   = GRID | TEXT_LIST | VIDEO_FEED
+```
+
+`PLATFORM_SOURCES` 是精确映射表：`bilibili-search → BILIBILI`、`zhihu-search → ZHIHU`、`douyin-search → DOUYIN`、`local-demo-search → LOCAL_DEMO`。评分 cap 数值（按 platform/contentType/layoutType 选择哪套归一化上限）留给任务 10 与用户一起确认，步骤 5 不预设具体数值。
+
+### Candidate ID 命名空间规则（冻结，供任务 13/15 使用）
+
+Bilibili 现有 ID 直接是裸 BV 号（如 `BV1xx`），**不改变**，避免历史 MissedPath 因 ID 格式变化而重复。新平台各自使用不与 BV 号或彼此冲突的前缀，Adapter 内部保证同一逻辑内容始终生成同一 ID：
+
+```text
+Bilibili：<BV 号>                      例如 BV1xx4y1x7abc         （不变）
+知乎：    zhihu:<contentType>:<id>      例如 zhihu:question:123456
+                                             zhihu:answer:789012
+                                             zhihu:article:345678
+抖音：    douyin:<contentType>:<id>     例如 douyin:video:7123456789
+                                             douyin:image_post:7123456790
+```
+
+`id` 取自站点稳定 ID（知乎 question/answer/article ID、抖音 aweme_id），不使用页面渲染顺序或临时 DOM 属性。命名空间前缀只用于避免跨平台碰撞，不替代 `contentType` 字段。
+
+### Adapter 可选能力：`extractCandidateTags`
+
+`SiteAdapter` 的四个必需方法（`canHandle`、`getContext`、`extractCandidates`、`observeChanges`）不变。新增一个**可选**方法：
+
+```text
+extractCandidateTags(document) => [{candidateId, nativeTags}, ...]
+```
+
+未实现该方法的 Adapter（当前 Demo、Bilibili）不受影响，Runtime 检测到方法不存在时直接跳过，标签退回任务 7/8 的本地标题/搜索词 fallback。DOM Element 永远不会通过这个方法进入消息或存储；返回值必须是纯数据。
+
+## 标签消息通道（步骤 5 新增）
+
+`CANDIDATE_TAGS_DISCOVERED` 是独立于 `CANDIDATES_DISCOVERED` 的严格消息，只用于把 Adapter 从 DOM 读到的平台原生标签送到 Background：
+
+```text
+payload = { sessionId, tags: [{candidateId, nativeTags}, ...], discoveredAt }
+```
+
+约束：
+
+- `payload` 不包含 `owner` 字段；Session Owner 仍完全由 Background 根据 Chrome 的 `MessageSender`（`sender.tab.id`/`sender.documentId`/`sender.frameId`）派生，内容脚本无法在 payload 里伪造归属；
+- `tags` 非空、批大小不超过 `CANDIDATE_TAGS_BATCH_LIMIT`（50），batch 内 `candidateId` 不得重复；
+- 每个 `nativeTags` 受 `TAG_LIMITS` 的长度与数量上限约束，与任务 7 的本地标签共用同一组上限；
+- 只关联 `sessionId` + `candidateId`；Background 用当前 Session 中已发现的 Candidate 标题重建 `CandidateTagProfileV1`，`title` 永远来自 Repository，消息中即使携带 `title` 也会被忽略；
+- 对不属于当前 Owner Session 的 `candidateId`、已进入 `session-finalization` 的迟到 batch、以及处于非 `OPEN` 状态的 Session，一律拒绝写入而不是静默丢弃；
+- 采集暂停（`Settings.enabled === false`）时该通道与 `CANDIDATES_DISCOVERED`/`SIGNALS_UPDATED` 同样被阻止；
+- 写入通过 `saveCandidateTagProfile` 走 Repository 既有幂等路径：重复发送相同标签不产生新 commit。
+
+`content/siteRuntime.js` 在每次 `discoverCandidates` 成功后，如果 Adapter 实现了 `extractCandidateTags`，会读取一次并只上报属于本次已接受 Candidate 集合的条目；读取或消息失败都只是静默跳过，绝不影响 discovery、signals 或 finalize。
 
 ## 本地标签契约
 

@@ -4,6 +4,7 @@ import {
   DEFAULT_SETTINGS_V1,
   REENCOUNTER_FEEDBACK_OUTCOMES,
   SCHEMA_VERSION,
+  isCandidateNativeTagsV1,
   isCandidateSignalsV1,
   isCandidateV1,
   isMissedPathV1,
@@ -26,6 +27,7 @@ export const MESSAGE_TYPES = Object.freeze({
   ACTIVE_TAB_CHANGED: "ACTIVE_TAB_CHANGED",
   ACTIVE_CONTEXT_QUERY: "ACTIVE_CONTEXT_QUERY",
   CANDIDATE_CHOSEN: "CANDIDATE_CHOSEN",
+  CANDIDATE_TAGS_DISCOVERED: "CANDIDATE_TAGS_DISCOVERED",
   CANDIDATES_DISCOVERED: "CANDIDATES_DISCOVERED",
   DATA_DELETE_ALL: "DATA_DELETE_ALL",
   MISSED_PATH_DELETE: "MISSED_PATH_DELETE",
@@ -45,9 +47,18 @@ export const ACTIVE_CONTEXT_STATUSES = Object.freeze({
   UNAVAILABLE: "UNAVAILABLE"
 });
 
+/**
+ * The maximum number of Candidates one native tag batch may carry. This bounds
+ * a single message so a hostile or malfunctioning page cannot submit unbounded
+ * tag work. Per-tag length and count limits come from TAG_LIMITS.
+ */
+export const CANDIDATE_TAGS_BATCH_LIMIT = 50;
+
 export const RESPONSE_ERROR_CODES = Object.freeze({
   CANDIDATE_DISCOVERY_CONFLICT: "CANDIDATE_DISCOVERY_CONFLICT",
   CANDIDATE_DISCOVERY_FAILED: "CANDIDATE_DISCOVERY_FAILED",
+  CANDIDATE_TAGS_CONFLICT: "CANDIDATE_TAGS_CONFLICT",
+  CANDIDATE_TAGS_FAILED: "CANDIDATE_TAGS_FAILED",
   COLLECTION_PAUSED: "COLLECTION_PAUSED",
   DATA_DELETE_ALL_FAILED: "DATA_DELETE_ALL_FAILED",
   INVALID_REQUEST: "INVALID_REQUEST",
@@ -69,6 +80,21 @@ export const RESPONSE_ERROR_CODES = Object.freeze({
   SETTINGS_UPDATE_FAILED: "SETTINGS_UPDATE_FAILED",
   STORAGE_ERROR: "STORAGE_ERROR"
 });
+
+/**
+ * One platform-native tag batch for Candidates already accepted by the
+ * Background. The payload never carries a Session Owner.
+ *
+ * @typedef {object} CandidateTagsDiscoveredMessageV1
+ * @property {typeof SCHEMA_VERSION} schemaVersion
+ * @property {typeof MESSAGE_TYPES.CANDIDATE_TAGS_DISCOVERED} type
+ * @property {string} requestId
+ * @property {{
+ *   sessionId: string,
+ *   tags: readonly import("./types.js").CandidateNativeTagsV1[],
+ *   discoveredAt: number
+ * }} payload
+ */
 
 /**
  * @typedef {object} PingMessageV1
@@ -257,6 +283,16 @@ const CANDIDATES_DISCOVERED_PAYLOAD_KEYS = Object.freeze([
   "context",
   "candidates",
   "discoveredAt"
+]);
+const CANDIDATE_TAGS_DISCOVERED_PAYLOAD_KEYS = Object.freeze([
+  "sessionId",
+  "tags",
+  "discoveredAt"
+]);
+const CANDIDATE_TAGS_DISCOVERED_RESPONSE_KEYS = Object.freeze([
+  "sessionId",
+  "acceptedCandidateIds",
+  "storedCandidateCount"
 ]);
 const SIGNALS_UPDATED_PAYLOAD_KEYS = Object.freeze([
   "signals",
@@ -616,6 +652,95 @@ export function isCandidatesDiscoveredMessage(message) {
     }
     candidateIds.add(candidate.id);
     normalizedUrls.add(normalizedUrl);
+  }
+  return true;
+}
+
+/**
+ * Create one platform-native tag batch for already discovered Candidates.
+ *
+ * The payload carries no Session Owner: ownership is derived in the Background
+ * from Chrome's trusted MessageSender, so a content script cannot claim to own
+ * another tab's Session. Tags are correlated only by sessionId + candidateId.
+ *
+ * @param {string} sessionId
+ * @param {readonly import("./types.js").CandidateNativeTagsV1[]} tags
+ * @param {number} [discoveredAt]
+ * @param {string} [requestId]
+ * @returns {CandidateTagsDiscoveredMessageV1}
+ */
+export function createCandidateTagsDiscoveredMessage(
+  sessionId,
+  tags,
+  discoveredAt = Date.now(),
+  requestId = createRequestId()
+) {
+  requireRequestId(requestId, "CANDIDATE_TAGS_DISCOVERED");
+  const message = {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.CANDIDATE_TAGS_DISCOVERED,
+    requestId,
+    payload: { sessionId, tags, discoveredAt }
+  };
+  if (!isCandidateTagsDiscoveredMessage(message)) {
+    throw new TypeError(
+      "Failed to create a valid CANDIDATE_TAGS_DISCOVERED message."
+    );
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is CandidateTagsDiscoveredMessageV1}
+ */
+export function isCandidateTagsDiscoveredMessage(message) {
+  if (
+    !hasValidEnvelope(message, MESSAGE_TYPES.CANDIDATE_TAGS_DISCOVERED) ||
+    !hasExactKeys(message.payload, CANDIDATE_TAGS_DISCOVERED_PAYLOAD_KEYS) ||
+    !isNonEmptyString(message.payload.sessionId) ||
+    !Array.isArray(message.payload.tags) ||
+    message.payload.tags.length === 0 ||
+    message.payload.tags.length > CANDIDATE_TAGS_BATCH_LIMIT ||
+    !isFiniteNumber(message.payload.discoveredAt) ||
+    message.payload.discoveredAt < 0
+  ) {
+    return false;
+  }
+
+  const candidateIds = new Set();
+  for (const entry of message.payload.tags) {
+    if (!isCandidateNativeTagsV1(entry) || candidateIds.has(entry.candidateId)) {
+      return false;
+    }
+    candidateIds.add(entry.candidateId);
+  }
+  return true;
+}
+
+/**
+ * @param {unknown} response
+ * @returns {boolean}
+ */
+export function isCandidateTagsDiscoveredResponse(message) {
+  if (!isResponseMessage(message)) {
+    return false;
+  }
+  if (message.ok === false) {
+    return true;
+  }
+  if (
+    !hasExactKeys(message.data, CANDIDATE_TAGS_DISCOVERED_RESPONSE_KEYS) ||
+    !isNonEmptyString(message.data.sessionId) ||
+    !Array.isArray(message.data.acceptedCandidateIds) ||
+    !message.data.acceptedCandidateIds.every(isNonEmptyString) ||
+    new Set(message.data.acceptedCandidateIds).size !==
+      message.data.acceptedCandidateIds.length ||
+    !Number.isInteger(message.data.storedCandidateCount) ||
+    message.data.storedCandidateCount <
+      message.data.acceptedCandidateIds.length
+  ) {
+    return false;
   }
   return true;
 }

@@ -12,6 +12,7 @@ import {
   createActiveContextQueryMessage,
   createActiveTabChangedMessage,
   createCandidateChosenMessage,
+  createCandidateTagsDiscoveredMessage,
   createCandidatesDiscoveredMessage,
   createDataDeleteAllMessage,
   createErrorResponseMessage,
@@ -31,6 +32,8 @@ import {
   isActiveContextQueryResponse,
   isActiveTabChangedMessage,
   isCandidateChosenMessage,
+  isCandidateTagsDiscoveredMessage,
+  isCandidateTagsDiscoveredResponse,
   isCandidatesDiscoveredMessage,
   isCandidatesDiscoveredResponse,
   isDataDeleteAllMessage,
@@ -97,6 +100,16 @@ const candidatesDiscovered = createCandidatesDiscoveredMessage(
   discoveredCandidates,
   200,
   "request-discovered"
+);
+const candidateNativeTags = [
+  { candidateId: "candidate-1", nativeTags: ["#AI", "机器人"] },
+  { candidateId: "candidate-2", nativeTags: [] }
+];
+const candidateTagsDiscovered = createCandidateTagsDiscoveredMessage(
+  "session-1",
+  candidateNativeTags,
+  260,
+  "request-candidate-tags"
 );
 const signalsSnapshot = {
   candidateId: "candidate-1",
@@ -229,6 +242,12 @@ const messageCases = [
     wrongType: MESSAGE_TYPES.PING
   },
   {
+    name: "CANDIDATE_TAGS_DISCOVERED",
+    message: candidateTagsDiscovered,
+    validator: isCandidateTagsDiscoveredMessage,
+    wrongType: MESSAGE_TYPES.PING
+  },
+  {
     name: "SIGNALS_UPDATED",
     message: signalsUpdated,
     validator: isSignalsUpdatedMessage,
@@ -291,6 +310,7 @@ test("keeps MESSAGE_TYPES frozen with the implemented messages", () => {
     "ACTIVE_TAB_CHANGED",
     "CANDIDATES_DISCOVERED",
     "CANDIDATE_CHOSEN",
+    "CANDIDATE_TAGS_DISCOVERED",
     "DATA_DELETE_ALL",
     "MISSED_PATHS_QUERY",
     "MISSED_PATH_DELETE",
@@ -424,6 +444,79 @@ test("creates a strict CANDIDATES_DISCOVERED batch", () => {
       }
     }),
     false
+  );
+});
+
+test("creates a strict CANDIDATE_TAGS_DISCOVERED batch with no owner in payload", () => {
+  assert.deepEqual(candidateTagsDiscovered, {
+    schemaVersion: SCHEMA_VERSION,
+    type: MESSAGE_TYPES.CANDIDATE_TAGS_DISCOVERED,
+    requestId: "request-candidate-tags",
+    payload: {
+      sessionId: "session-1",
+      tags: candidateNativeTags,
+      discoveredAt: 260
+    }
+  });
+  assert.equal(
+    Object.hasOwn(candidateTagsDiscovered.payload, "owner"),
+    false
+  );
+  assert.equal(
+    isCandidateTagsDiscoveredMessage(candidateTagsDiscovered),
+    true
+  );
+  assert.throws(
+    () =>
+      createCandidateTagsDiscoveredMessage(
+        "session-1",
+        [],
+        260,
+        "request-candidate-tags-empty"
+      ),
+    TypeError
+  );
+  assert.equal(
+    isCandidateTagsDiscoveredMessage({
+      ...candidateTagsDiscovered,
+      payload: {
+        ...candidateTagsDiscovered.payload,
+        tags: [candidateNativeTags[0], { ...candidateNativeTags[0] }]
+      }
+    }),
+    false,
+    "duplicate candidateId in one batch must be rejected"
+  );
+  assert.equal(
+    isCandidateTagsDiscoveredMessage({
+      ...candidateTagsDiscovered,
+      payload: { ...candidateTagsDiscovered.payload, owner: { tabId: 1 } }
+    }),
+    false,
+    "a payload-supplied owner must be rejected"
+  );
+  assert.equal(
+    isCandidateTagsDiscoveredMessage({
+      ...candidateTagsDiscovered,
+      payload: {
+        ...candidateTagsDiscovered.payload,
+        tags: [{ candidateId: "candidate-1", nativeTags: [123] }]
+      }
+    }),
+    false,
+    "a non-string native tag must be rejected"
+  );
+  const overLimitTags = Array.from({ length: 51 }, (_, index) => ({
+    candidateId: `candidate-${index}`,
+    nativeTags: []
+  }));
+  assert.equal(
+    isCandidateTagsDiscoveredMessage({
+      ...candidateTagsDiscovered,
+      payload: { ...candidateTagsDiscovered.payload, tags: overLimitTags }
+    }),
+    false,
+    "a batch above CANDIDATE_TAGS_BATCH_LIMIT must be rejected"
   );
 });
 
@@ -611,6 +704,28 @@ test("shared ResponseMessage factories create strict success and error shapes", 
     true
   );
   assert.equal(isCandidatesDiscoveredResponse(error), true);
+  assert.equal(
+    isCandidateTagsDiscoveredResponse(
+      createSuccessResponseMessage("request-tags-response", {
+        sessionId: "session-1",
+        acceptedCandidateIds: ["candidate-1"],
+        storedCandidateCount: 1
+      })
+    ),
+    true
+  );
+  assert.equal(isCandidateTagsDiscoveredResponse(error), true);
+  assert.equal(
+    isCandidateTagsDiscoveredResponse(
+      createSuccessResponseMessage("request-invalid-tags-response", {
+        sessionId: "session-1",
+        acceptedCandidateIds: ["candidate-1", "candidate-1"],
+        storedCandidateCount: 1
+      })
+    ),
+    false,
+    "duplicate accepted candidate IDs must be rejected"
+  );
   assert.equal(
     isSignalsUpdatedResponse(
       createSuccessResponseMessage("request-signals-response", {

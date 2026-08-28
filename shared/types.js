@@ -51,6 +51,46 @@ const TAG_STOP_WORD_SET = new Set(TAG_STOP_WORDS);
 const TAG_CONTROL_OR_FORMAT_PATTERN = /[\p{Cc}\p{Cf}]+/gu;
 const TAG_UNSUPPORTED_CHARACTER_PATTERN = /[^\p{L}\p{N}_\-\s]+/gu;
 
+/**
+ * The platform namespace of a supported result page. This value is never
+ * persisted; it is derived from the already persisted Candidate `source` by
+ * resolvePlatformFromSource() so historical records stay valid unchanged.
+ */
+export const PLATFORMS = Object.freeze({
+  BILIBILI: "BILIBILI",
+  ZHIHU: "ZHIHU",
+  DOUYIN: "DOUYIN",
+  LOCAL_DEMO: "LOCAL_DEMO",
+  UNKNOWN: "UNKNOWN"
+});
+
+/**
+ * The exact, explicit source-to-platform map. Only these literal source values
+ * resolve to a known platform; no substring or fuzzy matching is permitted.
+ */
+export const PLATFORM_SOURCES = Object.freeze({
+  "bilibili-search": PLATFORMS.BILIBILI,
+  "zhihu-search": PLATFORMS.ZHIHU,
+  "douyin-search": PLATFORMS.DOUYIN,
+  "local-demo-search": PLATFORMS.LOCAL_DEMO
+});
+
+/** The content kinds the three approved platforms may contribute. */
+export const CONTENT_TYPES = Object.freeze({
+  VIDEO: "VIDEO",
+  IMAGE_POST: "IMAGE_POST",
+  QUESTION: "QUESTION",
+  ANSWER: "ANSWER",
+  ARTICLE: "ARTICLE"
+});
+
+/** The result-list layouts that later scoring caps may distinguish. */
+export const LAYOUT_TYPES = Object.freeze({
+  GRID: "GRID",
+  TEXT_LIST: "TEXT_LIST",
+  VIDEO_FEED: "VIDEO_FEED"
+});
+
 export const CONSIDERATION_REASON_CODES = Object.freeze({
   LONG_EXPOSURE: "LONG_EXPOSURE",
   LONG_HOVER: "LONG_HOVER",
@@ -110,6 +150,9 @@ export const DEFAULT_SETTINGS_V1 = Object.freeze({
 /** @typedef {typeof REENCOUNTER_OUTCOMES[keyof typeof REENCOUNTER_OUTCOMES]} ReencounterOutcomeV1 */
 /** @typedef {typeof REENCOUNTER_FEEDBACK_OUTCOMES[keyof typeof REENCOUNTER_FEEDBACK_OUTCOMES]} ReencounterFeedbackOutcomeV1 */
 /** @typedef {typeof SESSION_LIFECYCLE_STATUSES[keyof typeof SESSION_LIFECYCLE_STATUSES]} SessionLifecycleStatusV2 */
+/** @typedef {typeof PLATFORMS[keyof typeof PLATFORMS]} PlatformV1 */
+/** @typedef {typeof CONTENT_TYPES[keyof typeof CONTENT_TYPES]} ContentTypeV1 */
+/** @typedef {typeof LAYOUT_TYPES[keyof typeof LAYOUT_TYPES]} LayoutTypeV1 */
 
 /**
  * Background-authoritative identity for one content-document Session.
@@ -134,6 +177,14 @@ export const DEFAULT_SETTINGS_V1 = Object.freeze({
 /**
  * A normalized result candidate emitted by a Site Adapter.
  *
+ * contentType and layoutType are optional only for backward compatibility with
+ * v2 records written before the multi-platform contract was frozen. They must
+ * appear together or not at all; one without the other is invalid. Every newly
+ * produced real-site Candidate is expected to carry both.
+ *
+ * platform is deliberately absent: it is derived from `source` through
+ * resolvePlatformFromSource() so no migration of historical data is required.
+ *
  * @typedef {object} CandidateV1
  * @property {string} id
  * @property {string} url
@@ -141,6 +192,18 @@ export const DEFAULT_SETTINGS_V1 = Object.freeze({
  * @property {string} source
  * @property {number} rank
  * @property {string} sessionId
+ * @property {ContentTypeV1} [contentType]
+ * @property {LayoutTypeV1} [layoutType]
+ */
+
+/**
+ * One Candidate's platform-native tags in transit from a Site Adapter to the
+ * Background. This is a message-only DTO: nativeTags are persisted through
+ * CandidateTagProfileV1, never inside CandidateV1.
+ *
+ * @typedef {object} CandidateNativeTagsV1
+ * @property {string} candidateId
+ * @property {readonly string[]} nativeTags
  */
 
 /**
@@ -275,6 +338,15 @@ const CANDIDATE_KEYS = Object.freeze([
   "source",
   "rank",
   "sessionId"
+]);
+const CANDIDATE_WITH_CLASSIFICATION_KEYS = Object.freeze([
+  ...CANDIDATE_KEYS,
+  "contentType",
+  "layoutType"
+]);
+const CANDIDATE_NATIVE_TAGS_KEYS = Object.freeze([
+  "candidateId",
+  "nativeTags"
 ]);
 const SEARCH_CONTEXT_KEYS = Object.freeze([
   "query",
@@ -529,15 +601,73 @@ export function isSessionLifecycleStatusV2(value) {
  * @returns {value is CandidateV1}
  */
 export function isCandidateV1(value) {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const hasContentType = Object.hasOwn(value, "contentType");
+  const hasLayoutType = Object.hasOwn(value, "layoutType");
+  if (hasContentType !== hasLayoutType) {
+    // The multi-platform classification is a pair. One field without the other
+    // would let scoring caps read a half-declared Candidate.
+    return false;
+  }
+
   return Boolean(
-    hasExactKeys(value, CANDIDATE_KEYS) &&
+    hasExactKeys(
+      value,
+      hasContentType ? CANDIDATE_WITH_CLASSIFICATION_KEYS : CANDIDATE_KEYS
+    ) &&
       isNonEmptyString(value.id) &&
       isNonEmptyString(value.url) &&
       isNonEmptyString(value.title) &&
       isNonEmptyString(value.source) &&
       Number.isInteger(value.rank) &&
       value.rank > 0 &&
-      isNonEmptyString(value.sessionId)
+      isNonEmptyString(value.sessionId) &&
+      (!hasContentType ||
+        (isConstantValue(CONTENT_TYPES, value.contentType) &&
+          isConstantValue(LAYOUT_TYPES, value.layoutType)))
+  );
+}
+
+/**
+ * Resolve the platform namespace from an exact Candidate/Context source value.
+ * Unknown or non-string sources resolve to the explicit UNKNOWN platform; no
+ * substring or fuzzy inference is performed.
+ *
+ * @param {unknown} source
+ * @returns {PlatformV1}
+ */
+export function resolvePlatformFromSource(source) {
+  if (typeof source !== "string" || !Object.hasOwn(PLATFORM_SOURCES, source)) {
+    return PLATFORMS.UNKNOWN;
+  }
+  return PLATFORM_SOURCES[source];
+}
+
+/**
+ * True when a Candidate carries the frozen multi-platform classification pair.
+ * Historical v2 Candidates without it stay valid but report false.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function hasCandidateClassificationV1(value) {
+  return Boolean(
+    isCandidateV1(value) && Object.hasOwn(value, "contentType")
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is CandidateNativeTagsV1}
+ */
+export function isCandidateNativeTagsV1(value) {
+  return Boolean(
+    hasExactKeys(value, CANDIDATE_NATIVE_TAGS_KEYS) &&
+      isNonEmptyString(value.candidateId) &&
+      isNativeTagList(value.nativeTags)
   );
 }
 

@@ -16,6 +16,7 @@ import { createMessageRouter } from "./messageRouter.js";
 import { createSessionFinalizeUseCase } from "./sessionFinalize.js";
 import { createSessionManager } from "./sessionManager.js";
 import { createSessionRecoveryCoordinator } from "./sessionRecovery.js";
+import { createTagEnrichmentCoordinator } from "./tagEnrichment.js";
 import {
   SessionOwnerError,
   createSessionOwnerFromSender
@@ -98,6 +99,36 @@ const sessionFinalizeUseCase = createSessionFinalizeUseCase({
   }
 });
 
+let tagEnrichmentCoordinator;
+function getTagEnrichmentCoordinator() {
+  if (tagEnrichmentCoordinator === undefined) {
+    // Task 9 audit confirmed that Bilibili search cards expose no stable,
+    // visible native video tags. The real runtime still uses Task 8's
+    // coordinator to persist local title/query fallback profiles; a network
+    // provider can only be added after a separate explicit approval.
+    tagEnrichmentCoordinator = createTagEnrichmentCoordinator(
+      getRepository(),
+      null
+    );
+  }
+  return tagEnrichmentCoordinator;
+}
+
+const tagEnrichmentCoordinatorFacade = Object.freeze({
+  recordContextTags(context, owner) {
+    return getTagEnrichmentCoordinator().recordContextTags(context, owner);
+  },
+  enrichCandidate(entry, owner) {
+    return getTagEnrichmentCoordinator().enrichCandidate(entry, owner);
+  },
+  refreshSelectedTagProfile(sessionId, owner) {
+    return getTagEnrichmentCoordinator().refreshSelectedTagProfile(
+      sessionId,
+      owner
+    );
+  }
+});
+
 const messageRouter = createMessageRouter({
   getActiveContextForTab(tabId) {
     return getRepository().getActiveContextForTab(tabId);
@@ -113,6 +144,15 @@ const messageRouter = createMessageRouter({
   },
   mergeCandidateSignalsSnapshot(payload, owner) {
     return getRepository().mergeCandidateSignalsSnapshot(payload, owner);
+  },
+  getSession(sessionId, owner) {
+    return getRepository().getSession(sessionId, owner);
+  },
+  saveCandidateTagProfile(profile, owner) {
+    return getRepository().saveCandidateTagProfile(profile, owner);
+  },
+  getSessionFinalization(sessionId, owner) {
+    return getRepository().getSessionFinalization(sessionId, owner);
   },
   listMissedPaths() {
     return getRepository().listMissedPaths();
@@ -133,7 +173,8 @@ const messageRouter = createMessageRouter({
     return getRepository().recordReencounterShown(payload, tabId);
   }
 }, {
-  sessionFinalizeUseCase
+  sessionFinalizeUseCase,
+  tagEnrichmentCoordinator: tagEnrichmentCoordinatorFacade
 });
 
 async function queryActiveTabId(windowId) {
@@ -189,6 +230,7 @@ function getMessageSessionId(message) {
 function requiresSessionOwner(message) {
   return (
     message?.type === MESSAGE_TYPES.CANDIDATE_CHOSEN ||
+    message?.type === MESSAGE_TYPES.CANDIDATE_TAGS_DISCOVERED ||
     message?.type === MESSAGE_TYPES.CANDIDATES_DISCOVERED ||
     message?.type === MESSAGE_TYPES.SESSION_FINALIZE ||
     message?.type === MESSAGE_TYPES.SIGNALS_UPDATED
@@ -305,6 +347,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (
     message?.type !== MESSAGE_TYPES.CANDIDATE_CHOSEN &&
     message?.type !== MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY &&
+    message?.type !== MESSAGE_TYPES.CANDIDATE_TAGS_DISCOVERED &&
     message?.type !== MESSAGE_TYPES.CANDIDATES_DISCOVERED &&
     message?.type !== MESSAGE_TYPES.DATA_DELETE_ALL &&
     message?.type !== MESSAGE_TYPES.MISSED_PATH_DELETE &&

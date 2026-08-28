@@ -240,10 +240,24 @@ export function createSessionManager(repository, options = {}) {
           };
         }
 
+        // Read the authoritative SessionSelectedTagProfile for v2 consideration scoring.
+        // If unavailable (e.g., no clicked candidates), pass null; calculateConsideration
+        // will treat selected_tag_similarity as zero.
+        const sessionSelectedTagProfile = await repository.getSessionSelectedTagProfile(
+          sessionId,
+          owner
+        );
+
         const chosen = [];
         const missedPaths = [];
         for (const entry of session.candidates) {
-          const consideration = calculateConsideration(entry.signals);
+          const consideration = calculateConsideration(
+            entry.signals,
+            {
+              candidate: entry.candidate,
+              sessionSelectedTagProfile: sessionSelectedTagProfile ?? undefined
+            }
+          );
           const id = createResultId(sessionId, entry.candidate.id, owner);
 
           if (entry.signals.clicked) {

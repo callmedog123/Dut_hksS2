@@ -9,6 +9,8 @@ import {
   createSuccessResponseMessage,
   isActiveContextQueryMessage,
   isActiveContextQueryResponse,
+  isCandidateTagsDiscoveredMessage,
+  isCandidateTagsDiscoveredResponse,
   isCandidatesDiscoveredMessage,
   isCandidatesDiscoveredResponse,
   isDataDeleteAllMessage,
@@ -37,6 +39,10 @@ import {
   CandidateDiscoveryError,
   createCandidateDiscoveryUseCase
 } from "./candidateDiscovery.js";
+import {
+  CandidateTagsUpdateError,
+  createCandidateTagsUpdateUseCase
+} from "./candidateTagsUpdate.js";
 import {
   DataDeleteAllError,
   createDataDeleteAllUseCase
@@ -105,8 +111,9 @@ function createRequestError(requestId, code, message, retryable) {
  *   listReencounters?: () => Promise<unknown[]>,
  *   recordReencounterFeedback?: (payload: object) => Promise<unknown>,
  *   recordReencounterShown?: (payload: object, tabId?: number) => Promise<unknown>,
- *   mergeDiscoveredCandidates?: (payload: object, owner?: object) => Promise<unknown>,
- *   mergeCandidateSignalsSnapshot?: (payload: object, owner?: object) => Promise<unknown>
+  *   mergeDiscoveredCandidates?: (payload: object, owner?: object) => Promise<unknown>,
+ *   mergeCandidateSignalsSnapshot?: (payload: object, owner?: object) => Promise<unknown>,
+ *   getSession?: (sessionId: string, owner?: object) => Promise<unknown>
  *   saveSettings?: (settings: object) => Promise<boolean>
  * }} repository
  * @param {{
@@ -117,7 +124,12 @@ function createRequestError(requestId, code, message, retryable) {
  *   reencounterQueryUseCase?: {execute: (payload: object) => Promise<unknown[]>},
  *   reencounterFeedbackUseCase?: {execute: (payload: object) => Promise<unknown>},
  *   reencounterShownUseCase?: {execute: (payload: object) => Promise<unknown>},
- *   sessionFinalizeUseCase?: {execute: (payload: object) => Promise<unknown>},
+  *   sessionFinalizeUseCase?: {execute: (payload: object) => Promise<unknown>},
+ *   tagEnrichmentCoordinator?: {
+ *     recordContextTags: (context: object, owner?: object) => Promise<unknown>,
+ *     enrichCandidate: (entry: object, owner?: object) => Promise<unknown>,
+ *     refreshSelectedTagProfile: (sessionId: string, owner?: object) => Promise<unknown>
+ *   },
  *   signalsUpdateUseCase?: {execute: (payload: object) => Promise<unknown>}
  *   settingsUpdateUseCase?: {execute: (payload: object) => Promise<unknown>}
  * }} [options]
@@ -155,11 +167,18 @@ export function createMessageRouter(repository, options = {}) {
     (typeof repository.mergeDiscoveredCandidates === "function"
       ? createCandidateDiscoveryUseCase(repository)
       : null);
+  const candidateTagsUpdateUseCase = options.candidateTagsUpdateUseCase ??
+    (typeof repository.saveCandidateTagProfile === "function" &&
+    typeof repository.getSession === "function" &&
+    typeof repository.getSessionFinalization === "function"
+      ? createCandidateTagsUpdateUseCase(repository)
+      : null);
   const signalsUpdateUseCase = options.signalsUpdateUseCase ??
     (typeof repository.mergeCandidateSignalsSnapshot === "function"
       ? createSignalsUpdateUseCase(repository)
       : null);
   const sessionFinalizeUseCase = options.sessionFinalizeUseCase ?? null;
+  const tagEnrichmentCoordinator = options.tagEnrichmentCoordinator ?? null;
   const settingsUpdateUseCase = options.settingsUpdateUseCase ??
     (typeof repository.getSettings === "function" &&
     typeof repository.saveSettings === "function"
@@ -182,6 +201,39 @@ export function createMessageRouter(repository, options = {}) {
     throw new TypeError(
       "Message Router data delete all use case must implement execute()."
     );
+  }
+
+  async function enrichCandidateBestEffort(sessionId, candidateId, owner) {
+    if (
+      tagEnrichmentCoordinator === null ||
+      typeof repository.getSession !== "function"
+    ) {
+      return;
+    }
+    try {
+      const session = await repository.getSession(sessionId, owner);
+      const entry = session?.candidates?.find(
+        (item) => item.candidate.id === candidateId
+      );
+      if (entry !== undefined) {
+        await tagEnrichmentCoordinator.enrichCandidate(entry, owner);
+      }
+    } catch {
+      // Tag enrichment remains auxiliary. A local fallback or a later retry
+      // must never reject discovery, signals, or settlement.
+    }
+  }
+
+  async function refreshSelectedTagsBestEffort(sessionId, owner) {
+    if (tagEnrichmentCoordinator === null) {
+      return;
+    }
+    try {
+      await tagEnrichmentCoordinator.refreshSelectedTagProfile(sessionId, owner);
+    } catch {
+      // Finalization is still authoritative without a tag profile. Task 11
+      // will read the explicit empty/local fallback profile when available.
+    }
   }
   if (
     missedPathDeleteUseCase !== null &&
@@ -211,6 +263,15 @@ export function createMessageRouter(repository, options = {}) {
     );
   }
   if (
+    candidateTagsUpdateUseCase !== null &&
+    (!isRecord(candidateTagsUpdateUseCase) ||
+      typeof candidateTagsUpdateUseCase.execute !== "function")
+  ) {
+    throw new TypeError(
+      "Message Router Candidate tags update use case must implement execute()."
+    );
+  }
+  if (
     settingsUpdateUseCase !== null &&
     (!isRecord(settingsUpdateUseCase) ||
       typeof settingsUpdateUseCase.execute !== "function")
@@ -226,6 +287,17 @@ export function createMessageRouter(repository, options = {}) {
   ) {
     throw new TypeError(
       "Message Router Session finalization use case must implement execute()."
+    );
+  }
+  if (
+    tagEnrichmentCoordinator !== null &&
+    (!isRecord(tagEnrichmentCoordinator) ||
+      typeof tagEnrichmentCoordinator.recordContextTags !== "function" ||
+      typeof tagEnrichmentCoordinator.enrichCandidate !== "function" ||
+      typeof tagEnrichmentCoordinator.refreshSelectedTagProfile !== "function")
+  ) {
+    throw new TypeError(
+      "Message Router tag enrichment coordinator has an invalid contract."
     );
   }
   if (
@@ -282,6 +354,8 @@ export function createMessageRouter(repository, options = {}) {
         message.type === MESSAGE_TYPES.RE_ENCOUNTER_SHOWN;
       const isCandidatesDiscovered =
         message.type === MESSAGE_TYPES.CANDIDATES_DISCOVERED;
+      const isCandidateTagsDiscovered =
+        message.type === MESSAGE_TYPES.CANDIDATE_TAGS_DISCOVERED;
       const isSignalsUpdated =
         message.type === MESSAGE_TYPES.SIGNALS_UPDATED;
       const isSessionFinalize =
@@ -297,6 +371,7 @@ export function createMessageRouter(repository, options = {}) {
         !isReencounterFeedback &&
         !isReencounterShown &&
         !isCandidatesDiscovered &&
+        !isCandidateTagsDiscovered &&
         !isSignalsUpdated &&
         !isSessionFinalize &&
         !isSettingsUpdate
@@ -328,11 +403,13 @@ export function createMessageRouter(repository, options = {}) {
                     ? isReencounterShownMessage(message)
                     : isCandidatesDiscovered
                       ? isCandidatesDiscoveredMessage(message)
-                      : isSignalsUpdated
-                        ? isSignalsUpdatedMessage(message)
-                        : isSessionFinalize
-                          ? isSessionFinalizeMessage(message)
-                          : isSettingsUpdateMessage(message);
+                      : isCandidateTagsDiscovered
+                        ? isCandidateTagsDiscoveredMessage(message)
+                        : isSignalsUpdated
+                          ? isSignalsUpdatedMessage(message)
+                          : isSessionFinalize
+                            ? isSessionFinalizeMessage(message)
+                            : isSettingsUpdateMessage(message);
       if (!isValidRequest) {
         return createRequestError(
           message.requestId,
@@ -507,7 +584,10 @@ export function createMessageRouter(repository, options = {}) {
       }
 
       if (
-        (isCandidatesDiscovered || isSignalsUpdated || isSessionFinalize) &&
+        (isCandidatesDiscovered ||
+          isCandidateTagsDiscovered ||
+          isSignalsUpdated ||
+          isSessionFinalize) &&
         typeof repository.getSettings === "function"
       ) {
         try {
@@ -543,6 +623,10 @@ export function createMessageRouter(repository, options = {}) {
           );
         }
         try {
+          await refreshSelectedTagsBestEffort(
+            message.payload.sessionId,
+            routingContext.sessionOwner
+          );
           const finalization = await sessionFinalizeUseCase.execute(
             message.payload,
             routingContext.sessionOwner
@@ -591,6 +675,11 @@ export function createMessageRouter(repository, options = {}) {
             message.payload,
             routingContext.sessionOwner
           );
+          await enrichCandidateBestEffort(
+            message.payload.signals.sessionId,
+            message.payload.signals.candidateId,
+            routingContext.sessionOwner
+          );
           const response = createSuccessResponseMessage(
             message.requestId,
             update
@@ -635,6 +724,24 @@ export function createMessageRouter(repository, options = {}) {
             message.payload,
             routingContext.sessionOwner
           );
+          if (tagEnrichmentCoordinator !== null) {
+            try {
+              await tagEnrichmentCoordinator.recordContextTags(
+                { ...message.payload.context, sessionId: message.payload.sessionId },
+                routingContext.sessionOwner
+              );
+            } catch {
+              // Context tags are a fallback enhancement, never a discovery
+              // prerequisite.
+            }
+            for (const candidate of message.payload.candidates) {
+              await enrichCandidateBestEffort(
+                message.payload.sessionId,
+                candidate.id,
+                routingContext.sessionOwner
+              );
+            }
+          }
           const response = createSuccessResponseMessage(
             message.requestId,
             discovery
@@ -660,6 +767,50 @@ export function createMessageRouter(repository, options = {}) {
             message.requestId,
             RESPONSE_ERROR_CODES.CANDIDATE_DISCOVERY_FAILED,
             "Unable to execute Candidate discovery.",
+            false
+          );
+        }
+      }
+
+      if (isCandidateTagsDiscovered) {
+        if (candidateTagsUpdateUseCase === null) {
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.CANDIDATE_TAGS_FAILED,
+            "Candidate tags update use case is unavailable.",
+            false
+          );
+        }
+        try {
+          const result = await candidateTagsUpdateUseCase.execute(
+            message.payload,
+            routingContext.sessionOwner
+          );
+          const response = createSuccessResponseMessage(
+            message.requestId,
+            result
+          );
+          if (!isCandidateTagsDiscoveredResponse(response)) {
+            throw new CandidateTagsUpdateError(
+              RESPONSE_ERROR_CODES.CANDIDATE_TAGS_FAILED,
+              "Candidate tags update returned invalid data.",
+              false
+            );
+          }
+          return response;
+        } catch (error) {
+          if (error instanceof CandidateTagsUpdateError) {
+            return createRequestError(
+              message.requestId,
+              error.code,
+              error.message,
+              error.retryable
+            );
+          }
+          return createRequestError(
+            message.requestId,
+            RESPONSE_ERROR_CODES.CANDIDATE_TAGS_FAILED,
+            "Unable to execute Candidate tags update.",
             false
           );
         }

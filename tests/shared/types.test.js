@@ -3,13 +3,18 @@ import test from "node:test";
 
 import {
   CONSIDERATION_REASON_CODES,
+  CONTENT_TYPES,
   DEFAULT_SETTINGS_V1,
+  LAYOUT_TYPES,
   MISSED_PATH_STATUSES,
+  PLATFORMS,
   REENCOUNTER_FEEDBACK_OUTCOMES,
   REENCOUNTER_OUTCOMES,
   REENCOUNTER_REASON_CODES,
   SCHEMA_VERSION,
   SESSION_LIFECYCLE_STATUSES,
+  hasCandidateClassificationV1,
+  isCandidateNativeTagsV1,
   isCandidateTagProfileV1,
   isCandidateSignalsV1,
   isCandidateV1,
@@ -22,7 +27,8 @@ import {
   isReencounterReasonV1,
   isSearchContextV1,
   isSessionLifecycleStatusV2,
-  isSettingsV1
+  isSettingsV1,
+  resolvePlatformFromSource
 } from "../../shared/types.js";
 import { MESSAGE_SCHEMA_VERSION } from "../../shared/messages.js";
 import { TAG_LIMITS } from "../../shared/tags.js";
@@ -130,6 +136,108 @@ test("rejects invalid or extra CandidateV1 fields", () => {
   for (const candidate of invalidCandidates) {
     assert.equal(isCandidateV1(candidate), false);
   }
+});
+
+test("accepts a legacy v2 CandidateV1 with no contentType/layoutType", () => {
+  assert.equal(Object.hasOwn(validCandidate, "contentType"), false);
+  assert.equal(Object.hasOwn(validCandidate, "layoutType"), false);
+  assert.equal(isCandidateV1(validCandidate), true);
+  assert.equal(hasCandidateClassificationV1(validCandidate), false);
+});
+
+test("accepts a CandidateV1 with both contentType and layoutType", () => {
+  const classified = {
+    ...validCandidate,
+    contentType: CONTENT_TYPES.VIDEO,
+    layoutType: LAYOUT_TYPES.GRID
+  };
+  assert.equal(isCandidateV1(classified), true);
+  assert.equal(hasCandidateClassificationV1(classified), true);
+});
+
+test("rejects a CandidateV1 with only one of contentType/layoutType", () => {
+  assert.equal(
+    isCandidateV1({ ...validCandidate, contentType: CONTENT_TYPES.VIDEO }),
+    false
+  );
+  assert.equal(
+    isCandidateV1({ ...validCandidate, layoutType: LAYOUT_TYPES.GRID }),
+    false
+  );
+});
+
+test("rejects a CandidateV1 with an unknown contentType or layoutType", () => {
+  assert.equal(
+    isCandidateV1({
+      ...validCandidate,
+      contentType: "NOT_A_TYPE",
+      layoutType: LAYOUT_TYPES.GRID
+    }),
+    false
+  );
+  assert.equal(
+    isCandidateV1({
+      ...validCandidate,
+      contentType: CONTENT_TYPES.VIDEO,
+      layoutType: "NOT_A_LAYOUT"
+    }),
+    false
+  );
+});
+
+test("resolves platform from an exact source, never from substrings", () => {
+  assert.equal(resolvePlatformFromSource("bilibili-search"), PLATFORMS.BILIBILI);
+  assert.equal(resolvePlatformFromSource("zhihu-search"), PLATFORMS.ZHIHU);
+  assert.equal(resolvePlatformFromSource("douyin-search"), PLATFORMS.DOUYIN);
+  assert.equal(
+    resolvePlatformFromSource("local-demo-search"),
+    PLATFORMS.LOCAL_DEMO
+  );
+  assert.equal(resolvePlatformFromSource("bilibili"), PLATFORMS.UNKNOWN);
+  assert.equal(
+    resolvePlatformFromSource("bilibili-search-extra"),
+    PLATFORMS.UNKNOWN
+  );
+  assert.equal(resolvePlatformFromSource(""), PLATFORMS.UNKNOWN);
+  assert.equal(resolvePlatformFromSource(null), PLATFORMS.UNKNOWN);
+  assert.equal(resolvePlatformFromSource(42), PLATFORMS.UNKNOWN);
+});
+
+test("accepts an exact CandidateNativeTagsV1 batch entry", () => {
+  assert.equal(
+    isCandidateNativeTagsV1({
+      candidateId: "candidate-1",
+      nativeTags: ["#AI", "机器人"]
+    }),
+    true
+  );
+  assert.equal(
+    isCandidateNativeTagsV1({ candidateId: "candidate-1", nativeTags: [] }),
+    true
+  );
+});
+
+test("rejects an invalid or extra-keyed CandidateNativeTagsV1 entry", () => {
+  assert.equal(isCandidateNativeTagsV1(null), false);
+  assert.equal(
+    isCandidateNativeTagsV1({ candidateId: "", nativeTags: [] }),
+    false
+  );
+  assert.equal(
+    isCandidateNativeTagsV1({
+      candidateId: "candidate-1",
+      nativeTags: [123]
+    }),
+    false
+  );
+  assert.equal(
+    isCandidateNativeTagsV1({
+      candidateId: "candidate-1",
+      nativeTags: [],
+      extra: true
+    }),
+    false
+  );
 });
 
 test("accepts SearchContextV1 with optional keywords", () => {

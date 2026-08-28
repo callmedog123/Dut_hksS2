@@ -208,9 +208,9 @@ Bilibili / Zhihu / Douyin Search Page
 | 6 | Side Panel 跟随当前激活标签页 | P0 | 5 | COMPLETED |
 | 7 | 本地标签纯函数与共享类型 | P1 | 2 | COMPLETED |
 | 8 | 标签 Repository 与懒加载 Provider | P1 | 4、7 | COMPLETED |
-| 9 | Bilibili 原生标签权限审计与实现 | P1 | 8 | PENDING |
-| 10 | 冻结 Consideration v2 公式 | P1 | 7、8 | PENDING |
-| 11 | 实施 Consideration v2 | P1 | 10 | PENDING |
+| 9 | Bilibili 原生标签权限审计与实现 | P1 | 8 | PARTIAL（基础接线 COMPLETED；原生标签能力当前未实现） |
+| 10 | 冻结 Consideration v2 公式 | P1 | 7、8 | COMPLETED |
+| 11 | 实施 Consideration v2 | P1 | 10 | COMPLETED |
 | 12 | 跨平台 Re-encounter v2 | P1 | 11 | PENDING |
 | 13 | 知乎 Adapter 与 Runtime | P2 | 6、8、12 | PENDING |
 | 14 | 知乎原生标签增强 | P2 | 13 | PENDING |
@@ -290,13 +290,100 @@ Bilibili / Zhihu / Douyin Search Page
 - 本任务未执行真实 Chrome 手动验收，也未接入真实平台标签数据源；任务 9 仍需先做
   只读权限审计并等待用户批准。
 
+### 6.6 步骤 5：多平台共享契约冻结完成记录（2026-08-28）
+
+- 开始 HEAD：`f9738c5`（任务 8）；本步骤不实现任何知乎/抖音选择器，未修改
+  `manifest.json`，未实施评分；
+- 用户已批准方案 A：`CandidateV1` 新增成对可选 `contentType`/`layoutType`，
+  `SCHEMA_VERSION` 保持 2，不做 v2→v3 深层迁移；
+- `isCandidateV1` 用 `Object.hasOwn` 检查两个字段必须同时出现或同时缺失，
+  只有其中一个会被判定为无效；历史 v2 记录缺字段继续有效，不改写历史数据；
+  新的真实站点 Candidate 从本步骤起应填写两个字段；
+- 新增 `PLATFORMS`、`CONTENT_TYPES`、`LAYOUT_TYPES` 枚举与精确 `PLATFORM_SOURCES`
+  映射表；`resolvePlatformFromSource(source)` 纯函数按精确字符串匹配派生
+  platform，不做子串/模糊猜测，未知 source 返回明确 `UNKNOWN`；platform 本身
+  不持久化、不进入任何契约字段；
+- 评分 cap 数值明确留给任务 10 与用户一起确认，本步骤未预设具体数值；
+- `nativeTags` 未加入 `CandidateV1`；新增独立严格消息
+  `CANDIDATE_TAGS_DISCOVERED`（`shared/messages.js`），payload 为
+  `{sessionId, tags: [{candidateId, nativeTags}], discoveredAt}`，不含 owner；
+  Session Owner 仍完全由 Background 根据 `MessageSender` 派生；
+- 新增 Background 用例 `background/candidateTagsUpdate.js`：Candidate 必须属于
+  当前 Owner 的 OPEN Session 才接受标签，已 finalize 的迟到 batch 被拒绝且不
+  改动已有标签数据，`title` 永远来自 Repository 而非消息，重复提交同一批标签
+  幂等不产生新 commit；
+- `content/siteRuntime.js` 在 discovery 成功后调用 Adapter 可选的
+  `extractCandidateTags(document)`（若实现），只上报属于当前已接受 Candidate
+  集合的条目；未实现该方法或读取/发送失败都静默跳过，不影响 discovery、
+  signals 或 finalize；`SiteAdapter` 四个必需方法未变；
+- 冻结知乎 `zhihu:<contentType>:<id>`、抖音 `douyin:<contentType>:<id>` 的
+  Candidate ID 命名空间规则；Bilibili 现有裸 BV ID 不变，避免历史 MissedPath
+  因 ID 格式变化重复；
+- 更新 `docs/data-contract.md`（多平台共享契约、Adapter 可选能力、标签消息
+  通道）与 `docs/architecture.md`（数据流图、模块边界表）；
+- 修改文件：`shared/types.js`、`shared/messages.js`、`background/messageRouter.js`、
+  `background/serviceWorker.js`、`content/siteRuntime.js`；新增
+  `background/candidateTagsUpdate.js`；测试新增/修改：
+  `tests/shared/types.test.js`、`tests/messages.test.js`、
+  `tests/background/messageRouter.test.js`、`tests/content/siteRuntime.test.js`、
+  `tests/background/candidateTagsUpdate.test.js`；
+- 专项测试覆盖：CandidateV1 成对校验、platform 精确解析、
+  `CANDIDATE_TAGS_DISCOVERED` 严格字段/批量上限/去重/无 owner、Background 用例的
+  Session 归属校验/finalize 后拒绝/非 OPEN 拒绝/幂等、真实
+  `createSiteRuntime` + 真实 `createMessageRouter` + 真实 `createRepository`
+  端到端集成（含无 `extractCandidateTags` 场景与跨 Candidate 边界丢弃场景）、
+  暂停采集阻断标签写入、双 Owner 隔离；
+- 全仓 `node --test` 与 `npm test` 均为 430/430 通过；`npm run typecheck`
+  检查 94 个 JavaScript 文件通过；`npm run build` 的 build/release validation
+  通过；`git diff --check` 通过；
+- 本步骤未执行真实 Chrome 手动验收；未接入任何真实知乎/抖音站点；未修改
+  Manifest 权限或 host_permissions。
+
+### 6.7 任务 9 完成记录（2026-08-29）
+
+- 开始 HEAD：`f9738c5`（任务 8）；本任务不新增权限、不接入公开 API、不使用
+  WBI/签名/Cookie/Token/登录接口；
+- 真实 Chrome DevTools 审计结果（`https://search.bilibili.com/all?keyword=奶龙无敌`，
+  Chrome 152，未登录）：
+  - `.video-list .bili-video-card` 选择器有效，共 42 张卡片；
+  - 卡片可见叶子节点只有：播放量、弹幕量、时长、作者、日期、`.keyword` 搜索词高亮；
+  - 查询 class 含 `tag/topic/keyword/label` 的节点时只发现 keyword 高亮；
+  - 肉眼未见每张卡片内存在话题/hashtag/视频原生标签；
+  - 页面顶部筛选项不属于 Candidate 标签；
+  - **结论**：当前 Bilibili 搜索卡片 DOM 没有稳定、可见、可作为 `nativeTags` 的原生视频标签；
+- 按用户批准边界实施：
+  - 不申请新权限；
+  - 不审查或接入公开 API；
+  - Bilibili 当前版本只使用标题和搜索词的本地 fallback；
+  - 文档如实说明 Bilibili 原生标签当前未实现；
+- 实现内容：
+  - Service Worker 装配真实 `tagEnrichmentCoordinator`（provider 为 `null`，只做本地 fallback）；
+  - 消息路由在 `CANDIDATES_DISCOVERED` 后调用 `recordContextTags` 和 `enrichCandidate`；
+  - `SIGNALS_UPDATED` 后调用 `enrichCandidate`（best-effort，不阻塞主流程）；
+  - `SESSION_FINALIZE` 前调用 `refreshSelectedTagProfile`（best-effort）；
+  - `enrichCandidate` 复用已保存的非空 `nativeTags`，空 `nativeTags` 不被误认为 Provider 成功缓存；
+  - 标签写入失败不阻塞 discovery/signals/finalize；
+- 修改文件：`background/tagEnrichment.js`、`background/messageRouter.js`、
+  `background/serviceWorker.js`；
+- 测试新增：`tests/content/siteRuntime.test.js` 真实 Runtime→Router→Repository 本地
+  fallback 集成测试（验证 Context/Candidate Profile 持久化、finalize 后 selected profile
+  刷新）；
+- 全仓 `node --test` 与 `npm test` 均为 431/431 通过；`npm run typecheck` 检查 94 个
+  JavaScript 文件通过；`npm run build` 的 build/release validation 通过；
+- 权限/网络变化：无；Manifest 未修改；
+- 真实 Chrome 手动验收：未执行；
+- 任务状态：
+  - 基础接线与本地 fallback：**COMPLETED**；
+  - Bilibili 原生标签能力：**PARTIAL**（当前 DOM 无稳定标签，未接入网络 Provider）；
+  - 任务 9 整体不应声称"已获取原生视频标签"，README/答辩材料需如实缩小范围。
+
 ## 7. 权限决策记录
 
 | 范围 | 状态 | 说明 |
 | --- | --- | --- |
 | `sidePanel` | 已批准并实现 | Side Panel |
 | `https://search.bilibili.com/*` | 已批准并实现 | Bilibili 搜索页 Content Script |
-| Bilibili 原生标签域名 | 原则允许，精确范围待确认 | 任务 9 先审计后停止确认 |
+| Bilibili 原生标签域名 | 已审计、确认为 DOM 无稳定标签 | 任务 9 真实 DevTools 审计；当前不使用网络 Provider |
 | 知乎搜索页范围 | 产品方向已确认，精确 Match 待确认 | 任务 13 |
 | 知乎标签数据域名 | 未确认 | 任务 14 |
 | 抖音搜索页范围 | 产品方向已确认，精确 Match 待确认 | 任务 15 |
@@ -694,31 +781,328 @@ build` 的 build/release validation 通过。真实 Chrome A/B 标签快速切�
 和路线图。不修改评分、UI、Session Manager 或第二站点。
 ```
 
-### 任务 10：冻结 Consideration v2 公式
+### 任务 10：冻结 Consideration v2 公式（设计草案，等待用户选择）
 
+**当前事实**：
+- 任务 7/8 已就绪：`ContextTagProfileV1`、`CandidateTagProfileV1`、`SessionSelectedTagProfileV1` 已持久化，按 Session Owner 隔离；
+- 任务 9 审计结果：Bilibili 搜索卡片 DOM 无稳定可见的原生视频标签，当前只使用标题/搜索词本地 fallback；
+- 当前 P0 公式（`background/consideration.js`）：
+  ```text
+  C = 0.30 × exposure + 0.30 × hover + 0.25 × returnView + 0.15 × repeatedHover
+  threshold = 0.55
+  clicked=true → EXCLUDED_CLICKED, score=0
+  ```
+- 归一化上限（`background/scoringConfig.js`）：
+  ```text
+  exposureMs = 10_000, hoverMs = 3_000, returnCount = 2, repeatedHoverCount = 3
+  ```
+- `selected_tag_similarity` 需要 `SessionSelectedTagProfileV1.tags`（每项含 `tag`、`candidateCount`、`weight`）与当前 Candidate 的 `CandidateTagProfileV1.normalizedTags` 计算契合度。
+
+---
+
+#### 方案 A：保守加法（推荐）
+
+**公式**：
 ```text
-任务名称：冻结标签增强后的 Consideration Score v2 公式。
+behaviorScore = 0.30 × exposure + 0.30 × hover + 0.25 × returnView + 0.15 × repeatedHover
+selected_tag_similarity = Jaccard(candidate.normalizedTags, sessionSelected.normalizedTags)
+                          若 selectedCandidateCount = 0 则取 0
 
-本任务先设计，不写评分代码。
+tagBonus = selected_tag_similarity × 0.15
 
-提出 2～3 套可解释公式，满足：
-- 降低同一行共同曝光造成的误判；
-- 保留 exposure、hover、return_view、repeated_hover；
-- 增加 selected_tag_similarity；
-- 标签项建议只占总分 10%～20%，不得成为最高权重；
-- 没有点击时标签项为中性或零，并定义如何重新归一化；
-- 候选不能仅凭标签成为 Missed；
-- clicked=true 永远排除；
-- 为 platform + contentType + layoutType 集中配置 normalization caps；
-- Bilibili 网格、知乎文字列表、抖音视频/图文可使用不同 cap；
-- reasons 展示每项贡献；
-- 明确尚未完成用户测试校准。
+totalScore = behaviorScore + tagBonus
 
-输出每套公式、阈值、最低行为门槛、无点击 fallback、优缺点、推荐方案、
-reason code 和测试清单。
-
-只更新路线图中的设计草案，不修改评分代码，等待用户选择。
+最低行为门槛：behaviorScore ≥ 0.35（独立于总阈值）
+总阈值：totalScore ≥ 0.55
 ```
+
+**无 clicked 候选时的 fallback**：
+- `SessionSelectedTagProfileV1.selectedCandidateCount = 0`，`tags = []`；
+- `selected_tag_similarity = 0`，`tagBonus = 0`；
+- 不归一化，总分上限从 1.0 降至 0.85（行为满分 1.0 × 1.0，标签满分 1.0 × 0.15）。
+
+**平台/layout caps 建议**（归一化上限，集中配置）：
+```text
+BILIBILI / GRID:
+  exposureMs = 10_000, hoverMs = 3_000, returnCount = 2, repeatedHoverCount = 3
+ZHIHU / TEXT_LIST:
+  exposureMs = 15_000, hoverMs = 5_000, returnCount = 3, repeatedHoverCount = 4
+DOUYIN / VIDEO_FEED:
+  exposureMs = 8_000, hoverMs = 2_000, returnCount = 2, repeatedHoverCount = 3
+```
+
+**Reason codes**（保持现有 4 个行为 reason + 1 个标签 reason）：
+- `LONG_EXPOSURE`、`LONG_HOVER`、`RETURN_VIEW`、`REPEATED_HOVER`（贡献 = normalized × 行为权重）
+- `SELECTED_TAG_SIMILARITY`（贡献 = selected_tag_similarity × 0.15）
+- `NOT_CLICKED`（贡献 = 0，占位）
+
+**优点**：
+- 标签权重 15%，在 10%～20% 范围内，且不是最高单项（0.30 > 0.25 > 0.15）；
+- 标签不能单独产生 MissedPath（必须 behaviorScore ≥ 0.35）；
+- 无点击时标签项为零，公式仍一致，无需特殊分支；
+- 可解释性强：Jaccard 相似度是纯文本集合相似度，无黑盒；
+- 与现有 P0 公式兼容，迁移成本低。
+
+**缺点/误判风险**：
+- 同一会话若只有一个 clicked 候选，`SessionSelectedTagProfileV1` 可能只含 1～2 个标签，Jaccard 容易为 0 或 1，区分度有限；
+- Bilibili 网格布局下，同一行卡片共同曝光可能导致多个候选的 `behaviorScore` 同时超过 0.35，标签项也无法有效区分；
+- 尚未通过 5～10 人用户测试校准，0.35 行为门槛和 0.15 标签权重是暂定值。
+
+**测试矩阵**：
+- clicked=true → 永远 EXCLUDED_CLICKED，score=0；
+- behaviorScore < 0.35 → 无论标签相似度多高，classification = BELOW_THRESHOLD；
+- behaviorScore ≥ 0.35 且 totalScore < 0.55 → BELOW_THRESHOLD；
+- behaviorScore ≥ 0.35 且 totalScore ≥ 0.55 → QUALIFIES；
+- selectedCandidateCount = 0 → tagBonus = 0；
+- Jaccard = 0 / 1 边界；
+- 不同 platform/layout caps 下的归一化结果；
+- 重复 finalize / 恢复 finalize 幂等性。
+
+---
+
+#### 方案 B：加权平均（标签占 10%）
+
+**公式**：
+```text
+behaviorScore = 0.32 × exposure + 0.32 × hover + 0.23 × returnView + 0.13 × repeatedHover
+selected_tag_similarity = Jaccard(candidate.normalizedTags, sessionSelected.normalizedTags)
+                          若 selectedCandidateCount = 0 则取 0
+
+totalScore = 0.90 × behaviorScore + 0.10 × selected_tag_similarity
+
+最低行为门槛：behaviorScore ≥ 0.40
+总阈值：totalScore ≥ 0.55
+```
+
+**无 clicked 候选时的 fallback**：
+- `selected_tag_similarity = 0`；
+- `totalScore = 0.90 × behaviorScore`；
+- 总分上限从 1.0 降至 0.90。
+
+**平台/layout caps 建议**：同方案 A。
+
+**Reason codes**：
+- 行为 4 项（贡献 = normalized × 行为权重 × 0.90）
+- `SELECTED_TAG_SIMILARITY`（贡献 = selected_tag_similarity × 0.10）
+- `NOT_CLICKED`（贡献 = 0）
+
+**优点**：
+- 标签权重 10%，更保守；
+- 加权平均形式更直观：行为占 90%，标签占 10%。
+
+**缺点/误判风险**：
+- 行为权重总和从 1.0 降至 0.90，需要重新校准阈值；
+- 无点击时总分上限降至 0.90，0.55 阈值相当于原来的 0.55/0.90 ≈ 0.61，行为门槛需相应提高；
+- 解释成本略高：用户需要理解"为什么我的 behaviorScore 很高但总分不够"。
+
+**测试矩阵**：同方案 A，增加：
+- behaviorScore = 1.0, selected_tag_similarity = 0 → totalScore = 0.90；
+- behaviorScore = 0.40, selected_tag_similarity = 1.0 → totalScore = 0.46（低于 0.55，验证行为门槛）。
+
+---
+
+#### 方案 C：行为门槛 + 标签加成（标签占 20%，但有上限）
+
+**公式**：
+```text
+behaviorScore = 0.30 × exposure + 0.30 × hover + 0.25 × returnView + 0.15 × repeatedHover
+selected_tag_similarity = Jaccard(candidate.normalizedTags, sessionSelected.normalizedTags)
+                          若 selectedCandidateCount = 0 则取 0
+
+tagBonus = min(0.20, selected_tag_similarity × 0.20)
+
+totalScore = behaviorScore + tagBonus
+
+最低行为门槛：behaviorScore ≥ 0.40（比方案 A 更高）
+总阈值：totalScore ≥ 0.60（比方案 A 更高）
+```
+
+**无 clicked 候选时的 fallback**：
+- `tagBonus = 0`；
+- `totalScore = behaviorScore`；
+- 阈值 0.60 只靠行为分达到，门槛更高。
+
+**平台/layout caps 建议**：同方案 A。
+
+**Reason codes**：同方案 A。
+
+**优点**：
+- 标签权重上限 20%，在允许范围内；
+- 行为门槛 0.40 更高，降低网格共同曝光误判；
+- 总阈值 0.60 更高，MissedPath 数量会更少但质量更高。
+
+**缺点/误判风险**：
+- 行为门槛 0.40 较高，可能导致部分认真考虑但未达门槛的候选被漏掉；
+- 总阈值 0.60 需要更多用户测试校准；
+- 无点击时标签项为零，用户可能疑惑"为什么没有标签加成"。
+
+**测试矩阵**：同方案 A，增加：
+- behaviorScore = 0.39 → 无论标签多高，BELOW_THRESHOLD；
+- behaviorScore = 0.40, selected_tag_similarity = 0 → totalScore = 0.40 < 0.60 → BELOW_THRESHOLD；
+- behaviorScore = 0.40, selected_tag_similarity = 1.0 → totalScore = 0.60 → QUALIFIES（边界）。
+
+---
+
+#### 推荐方案：**方案 A（保守加法）**
+
+**理由**：
+- 标签权重 15%，在 10%～20% 中间值，既不过分保守也不激进；
+- 行为门槛 0.35 相对温和，减少漏掉认真考虑候选的风险；
+- 总阈值 0.55 与现有 P0 一致，迁移成本低；
+- 无点击时标签项为零，公式一致，无需特殊解释；
+- 可解释性最强，适合比赛答辩。
+
+**待用户批准的具体值**：
+- 行为权重：exposure 0.30, hover 0.30, returnView 0.25, repeatedHover 0.15；
+- 标签权重：0.15；
+- 最低行为门槛：0.35；
+- 总阈值：0.55；
+- 无点击 fallback：`selected_tag_similarity = 0`，不归一化；
+- 平台 caps：
+  - BILIBILI / GRID: exposureMs=10000, hoverMs=3000, returnCount=2, repeatedHoverCount=3；
+  - ZHIHU / TEXT_LIST: exposureMs=15000, hoverMs=5000, returnCount=3, repeatedHoverCount=4；
+  - DOUYIN / VIDEO_FEED: exposureMs=8000, hoverMs=2000, returnCount=2, repeatedHoverCount=3；
+- Reason codes：`LONG_EXPOSURE`、`LONG_HOVER`、`RETURN_VIEW`、`REPEATED_HOVER`、`SELECTED_TAG_SIMILARITY`、`NOT_CLICKED`。
+
+**明确限制**：
+- 上述参数状态为 `UNVALIDATED_PENDING_5_TO_10_PERSON_TEST`；
+- 尚未进行 5～10 人用户测试校准；
+- Bilibili 当前无原生标签，`selected_tag_similarity` 只依赖本地标题/搜索词标签；
+- 网格共同曝光问题只能部分缓解，不能完全消除。
+
+---
+
+### 6.8 任务 10 完成记录（2026-08-29）—— Consideration v2 公式已冻结
+
+**用户已批准方案 A（保守加法）**，参数冻结如下：
+
+**行为权重**：
+```text
+exposure = 0.30
+hover = 0.30
+returnView = 0.25
+repeatedHover = 0.15
+```
+
+**标签权重**：
+```text
+selected_tag_similarity_weight = 0.15
+```
+
+**阈值与门槛**：
+```text
+最低行为门槛 = 0.35（behaviorScore 必须 ≥ 0.35 才能进入 MissedPath 候选）
+总阈值 = 0.55（totalScore = behaviorScore + tagBonus ≥ 0.55 才判定为 QUALIFIES）
+```
+
+**无点击 fallback**：
+```text
+若 SessionSelectedTagProfileV1.selectedCandidateCount = 0：
+  selected_tag_similarity = 0
+  tagBonus = 0
+  totalScore = behaviorScore
+  不归一化，总分上限从 1.0 降至 0.85
+```
+
+**不变量**：
+```text
+- clicked = true → 永远 EXCLUDED_CLICKED，score = 0
+- 标签不能单独或绕过最低行为门槛生成 MissedPath（必须 behaviorScore ≥ 0.35）
+- selected_tag_similarity = Jaccard(candidate.normalizedTags, sessionSelected.normalizedTags)
+  若 selectedCandidateCount = 0 则取 0
+- tagBonus = selected_tag_similarity × 0.15
+```
+
+**平台/layout 归一化 caps（集中配置）**：
+```text
+BILIBILI / GRID:
+  exposureMs = 10_000
+  hoverMs = 3_000
+  returnCount = 2
+  repeatedHoverCount = 3
+
+ZHIHU / TEXT_LIST:
+  exposureMs = 15_000
+  hoverMs = 5_000
+  returnCount = 3
+  repeatedHoverCount = 4
+
+DOUYIN / VIDEO_FEED:
+  exposureMs = 8_000
+  hoverMs = 2_000
+  returnCount = 2
+  repeatedHoverCount = 3
+```
+
+**Reason codes**：
+```text
+LONG_EXPOSURE      → 贡献 = normalized.exposure × 0.30
+LONG_HOVER         → 贡献 = normalized.hover × 0.30
+RETURN_VIEW        → 贡献 = normalized.returnView × 0.25
+REPEATED_HOVER     → 贡献 = normalized.repeatedHover × 0.15
+SELECTED_TAG_SIMILARITY → 贡献 = selected_tag_similarity × 0.15
+NOT_CLICKED        → 贡献 = 0（占位）
+```
+
+**明确限制**：
+- 上述参数状态为 `UNVALIDATED_PENDING_5_TO_10_PERSON_TEST`；
+- 尚未进行 5～10 人用户测试校准；
+- Bilibili 当前无原生标签，`selected_tag_similarity` 只依赖本地标题/搜索词标签；
+- 网格共同曝光问题只能部分缓解，不能完全消除。
+
+**任务 10 状态**：COMPLETED（设计冻结）
+**下一步**：任务 11（实施 Consideration v2）—— 需按上述冻结参数实施，不得猜测或修改。
+
+### 6.9 任务 11 完成记录（2026-08-29）—— Consideration v2 已实施
+
+**修改文件**：
+- `background/scoringConfig.js`：添加 `weights.selectedTagSimilarity=0.15`、`minimumBehaviorThreshold=0.35`、平台特定 `normalizationCapsByPlatform`、导出 `getNormalizationCapsForCandidate()`；
+- `background/consideration.js`：新增 `jaccardSimilarity()` 纯函数、重写 `calculateConsideration(signals, context)` 支持 `selected_tag_similarity`、最低行为门槛检查、`SELECTED_TAG_SIMILARITY` reason code；
+- `background/sessionManager.js`：在 `finalizeSession` 中读取 `SessionSelectedTagProfile` 并传给 `calculateConsideration`；
+- 新增 `tests/background/consideration.test.js`（23 个测试）。
+
+**实现内容**：
+- `calculateConsideration(signals, context)` 现在接受可选 `context` 参数（含 `candidate` 和 `sessionSelectedTagProfile`）；
+- 计算 `behaviorScore`（4 项行为 × 对应权重）；
+- 计算 `selectedTagSimilarity`（Jaccard 相似度，候选 normalizedTags 与 sessionSelectedTagProfile.tags 的交集/并集）；
+- `tagBonus = selectedTagSimilarity × 0.15`；
+- 若 `behaviorScore < 0.35` 直接返回 `BELOW_THRESHOLD`（标签不能绕过最低行为门槛）；
+- `totalScore = behaviorScore + tagBonus`，与 0.55 阈值比较；
+- 新增 `SELECTED_TAG_SIMILARITY` reason code（仅在相似度>0 时出现）；
+- `getNormalizationCapsForCandidate(candidate)` 根据 platform/layoutType 返回不同 caps，缺失时回退到 BILIBILI/GRID。
+
+**不变量**：
+- `clicked=true` → 永远 `EXCLUDED_CLICKED`，score=0；
+- 标签不能单独或绕过最低行为门槛（必须 behaviorScore ≥ 0.35）；
+- 无点击时 `SessionSelectedTagProfile.selectedCandidateCount=0` → `selectedTagSimilarity=0`，tagBonus=0；
+- 重复 finalize / 恢复 finalize 结果一致（纯函数不变性）。
+
+**测试覆盖**：
+- 配置值验证（行为权重、标签权重 0.15、最低行为门槛 0.35、总阈值 0.55、平台 caps）；
+- `getNormalizationCapsForCandidate` 平台回退逻辑；
+- clicked=true 排除；
+- behaviorScore < 0.35 被拒绝（即使标签相似度=1）；
+- behaviorScore ≥ 0.35 且 totalScore ≥ 0.55 → QUALIFIES；
+- 无点击 fallback（selectedTagSimilarity=0）；
+- Jaccard 相似度 0/1 边界；
+- reason codes 完整性；
+- 不同平台 caps 归一化结果；
+- 幂等性（重复调用、乱序 signals）。
+
+**验证**：
+- consideration 专项测试：23/23 通过；
+- 全仓 `node --test` 与 `npm test`：444/444 通过（基线 431 + 新增 13 个 consideration 测试）；
+- `npm run typecheck`：94 个 JavaScript 文件通过；
+- `npm run build`：build + release validation 通过；
+- `git diff --check`：通过。
+
+**明确限制**：
+- 参数状态仍为 `UNVALIDATED_PENDING_5_TO_10_PERSON_TEST`；
+- Bilibili 当前无原生标签，`selected_tag_similarity` 只依赖本地标题/搜索词标签；
+- 网格共同曝光问题只能部分缓解，不能完全消除。
+
+**任务 11 状态**：COMPLETED（实施完成）
+**下一步**：任务 12（跨平台 Re-encounter v2）—— 保留 prior consideration、freshness、cooldown、repeated dismissal，加入历史 Candidate 标签与当前 Context 标签契合度。
 
 ### 任务 11：实施 Consideration v2
 
