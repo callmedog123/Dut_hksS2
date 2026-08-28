@@ -200,9 +200,9 @@ Bilibili / Zhihu / Douyin Search Page
 | 编号 | 任务 | 优先级 | 前置 | 状态 |
 | --- | --- | --- | --- | --- |
 | 0 | 建立本路线图 | P0 | 无 | COMPLETED |
-| 1 | 抽取通用真实站点 Runtime | P0 | 0 | PENDING |
-| 2 | schemaVersion 2 与 v1 数据迁移 | P0 | 1 | PENDING |
-| 3 | Session Owner 与多标签页 Active Context | P0 | 2 | PENDING |
+| 1 | 抽取通用真实站点 Runtime | P0 | 0 | COMPLETED |
+| 2 | schemaVersion 2 与 v1 数据迁移 | P0 | 1 | COMPLETED |
+| 3 | Session Owner 与多标签页 Active Context | P0 | 2 | COMPLETED |
 | 4 | 信号检查点与持久化 Session 生命周期 | P0 | 3 | PENDING |
 | 5 | Worker/浏览器重启后的自动恢复结算 | P0 | 4 | PENDING |
 | 6 | Side Panel 跟随当前激活标签页 | P0 | 5 | PENDING |
@@ -220,6 +220,39 @@ Bilibili / Zhihu / Douyin Search Page
 
 任务 13 和 15 在基础设施完成后可以分别开发，但同一工作树中仍应一次只执行一个，避免共享 Registry、Manifest 和 Runtime 冲突。
 
+### 6.1 任务 1 完成记录（2026-08-28）
+
+- 开始 HEAD：`f8926eb`；
+- 新增 `content/siteRuntime.js`，承接候选发现、Candidate/Element binding、visibility、hover、click、signals、SPA 和 finalize 编排；
+- `content/bilibiliRuntime.js` 保留原有兼容导出，改为创建 Bilibili Adapter 并注入通用 Site Runtime 的薄包装；
+- Demo Runtime、Bilibili DOM Adapter、消息协议、Repository、评分、权限和 Side Panel 行为未改变；
+- `manifest.json` 只在原有严格 Bilibili 资源范围中加入 `content/siteRuntime.js`，未扩大权限、host 或 content-script matches；
+- 专项 Runtime/Adapter/build 测试：33/33 通过；全仓 `node --test` 与 `npm test`：319/319 通过；
+- `npm run typecheck`：79 个 JavaScript 文件语法检查通过；`npm run build`：build/release validation 通过；
+- 本任务未执行真实 Chrome 手动验收；发布前仍需按 `docs/manual-browser-checklist.md` 验证真实浏览器行为。
+
+### 6.2 任务 2 完成记录（2026-08-28）
+
+- 唯一共享 `SCHEMA_VERSION` 从 1 升级为 2，现有消息 payload 与领域 DTO 字段保持不变；
+- Repository 在首次访问时区分空库、v2、可迁移 v1、未知版本和无元数据非空库；
+- 完整 v1 数据会先逐类验证，再通过单次原子 `commit` 升级全部记录信封及 `meta:schema`，失败保持完整 v1 状态，重复执行不重复写入；
+- Settings、Session、Active Context、Chosen、MissedPath、Session Finalization、Reencounter 及反馈迁移后均可查询，删除、清空和 Worker 重启恢复保持可用；
+- 旧页面的 v1 消息会收到 `SCHEMA_VERSION_UNSUPPORTED`，错误文案明确要求刷新页面；
+- 未加入标签、多标签页、评分、Adapter、UI 或权限变化；
+- 迁移专项 6/6、Worker 恢复 11/11、全仓 `npm test` 328/328 通过；`npm run typecheck` 检查 80 个 JavaScript 文件通过，`npm run build` 的 build/release validation 通过；
+- 本任务未执行真实 Chrome 手动验收；提交候选版本前仍应单独验证升级旧扩展数据后的真实浏览器行为。
+
+### 6.3 任务 3 完成记录（2026-08-28）
+
+- 新增严格 `SessionOwnerV1`，由 Background 仅根据 `chrome.runtime.MessageSender` 的 `tab.id`、`documentId`、`frameId` 与消息中的 `sessionId` 生成；Content payload 不接受 owner，非主 frame 写入明确拒绝；
+- Session、signals、chosen、finalize marker 和最终 Chosen/Missed Path ID 均使用 owner 隔离，同一 query/内容 sessionId 在不同 tab 或 document 中不会合并；
+- Active Context 改为 tab/document 所有权记录；同一 tab 的较新 document 成为当前 Context，较旧 document 的迟到发现不会覆盖它，单 tab finalize 不删除其他 tab Context；
+- `ACTIVE_CONTEXT_QUERY` 和 `RE_ENCOUNTER_SHOWN` 由 Background 通过 `chrome.tabs.query({ active: true, lastFocusedWindow: true })` 解析当前激活 tab，再查询或校验对应 Context；
+- 经 Chrome 官方 Tabs API 文档确认，查询 tab ID 本身不需要新增 `tabs` 或 `activeTab` 权限；Manifest 未修改权限或站点范围；
+- v1→v2 迁移形成的 legacy Session/Context 继续可由兼容 Repository API 查询，但无 owner 的全局 Context 不会作为任何当前 tab Context 返回；
+- Owner/多标签页/Worker 恢复专项测试 19/19、全仓 `node --test` 与 `npm test` 336/336 通过；`npm run typecheck` 检查 83 个 JavaScript 文件通过；`npm run build` 的 build/release validation 通过；
+- 本任务未执行真实 Chrome 多标签页手动验收；任务 6 完成 Side Panel 标签切换监听后仍需补做真实浏览器矩阵。
+
 ## 7. 权限决策记录
 
 | 范围 | 状态 | 说明 |
@@ -231,7 +264,7 @@ Bilibili / Zhihu / Douyin Search Page
 | 知乎标签数据域名 | 未确认 | 任务 14 |
 | 抖音搜索页范围 | 产品方向已确认，精确 Match 待确认 | 任务 15 |
 | 抖音标签数据域名 | 未确认 | 任务 16 |
-| `tabs` 或 `activeTab` | 未确认 | 先验证当前标签页 ID 是否无需新增权限 |
+| `tabs` 或 `activeTab` | 无需新增 | 当前只用 `chrome.tabs.query` 读取非敏感 tab ID；未读取 URL/title/favicon 等敏感属性 |
 | `<all_urls>` | 永久禁止 | 不得申请 |
 
 ## 8. 尚待冻结的设计值

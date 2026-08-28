@@ -50,9 +50,9 @@ export function createReencounterShownUseCase(repository) {
   }
 
   return Object.freeze({
-    async execute(payload) {
+    async execute(payload, tabId) {
       try {
-        const result = await repository.recordReencounterShown(payload);
+        const result = await repository.recordReencounterShown(payload, tabId);
         if (!isResult(result)) {
           throw new TypeError("Repository returned invalid shown data.");
         }

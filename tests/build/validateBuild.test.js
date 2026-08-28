@@ -9,6 +9,7 @@ const validatorPath = path.resolve("scripts/validate-build.js");
 const BILIBILI_MATCH = "https://search.bilibili.com/*";
 const CONTENT_MODULE_RESOURCES = [
   "content/bilibiliRuntime.js",
+  "content/siteRuntime.js",
   "content/adapters/bilibiliSearchAdapter.js",
   "content/candidateBinding.js",
   "content/eventCollector/click.js",
@@ -83,9 +84,17 @@ function createBuildFixture(t, overrides = {}) {
     path.join(root, "content/bilibiliRuntime.js"),
     [
       'import "./adapters/bilibiliSearchAdapter.js";',
+      'import "./siteRuntime.js";'
+    ].join("\n"),
+    "utf8"
+  );
+  writeFileSync(
+    path.join(root, "content/siteRuntime.js"),
+    [
       'import "./eventCollector/click.js";',
       'import "./eventCollector/hover.js";',
-      'import "./visibility.js";'
+      'import "./visibility.js";',
+      "const adapter = options.createAdapter();"
     ].join("\n"),
     "utf8"
   );
@@ -160,4 +169,48 @@ test("build validation rejects a second content script entry", (t) => {
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /one exact Bilibili isolated entry/u);
+});
+
+test("build validation rejects collectors left in the Bilibili wrapper", (t) => {
+  const root = createBuildFixture(t);
+  writeFileSync(
+    path.join(root, "content/bilibiliRuntime.js"),
+    [
+      'import "./adapters/bilibiliSearchAdapter.js";',
+      'import "./siteRuntime.js";',
+      'import "./eventCollector/click.js";'
+    ].join("\n"),
+    "utf8"
+  );
+
+  const result = spawnSync(process.execPath, [validatorPath], {
+    cwd: root,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /delegate collectors to the shared Site Runtime/u);
+});
+
+test("build validation rejects Bilibili DOM knowledge in Site Runtime", (t) => {
+  const root = createBuildFixture(t);
+  writeFileSync(
+    path.join(root, "content/siteRuntime.js"),
+    [
+      'import "./eventCollector/click.js";',
+      'import "./eventCollector/hover.js";',
+      'import "./visibility.js";',
+      'import "./adapters/bilibiliSearchAdapter.js";',
+      "const adapter = options.createAdapter();"
+    ].join("\n"),
+    "utf8"
+  );
+
+  const result = spawnSync(process.execPath, [validatorPath], {
+    cwd: root,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must not contain Bilibili imports/u);
 });

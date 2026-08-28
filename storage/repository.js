@@ -9,11 +9,14 @@ import {
   isReencounterFeedbackV1,
   isReencounterRecordV1,
   isSearchContextV1,
+  isSessionOwnerV1,
   isSettingsV1
 } from "../shared/types.js";
 import { normalizeCandidateUrl } from "../shared/url.js";
 
 export const REPOSITORY_SCHEMA_KEY = "meta:schema";
+
+const MIGRATABLE_SCHEMA_VERSION = 1;
 
 export const REPOSITORY_KINDS = Object.freeze({
   ACTIVE_CONTEXT: "active-context",
@@ -88,14 +91,18 @@ function isSessionCandidate(value, sessionId) {
 }
 
 function isSessionState(value) {
+  const hasOwner = isRecord(value) && Object.hasOwn(value, "owner");
   if (
-    !hasExactKeys(value, [
-      "sessionId",
-      "context",
-      "candidates",
-      "updatedAt"
-    ]) ||
+    !hasExactKeys(
+      value,
+      hasOwner
+        ? ["sessionId", "owner", "context", "candidates", "updatedAt"]
+        : ["sessionId", "context", "candidates", "updatedAt"]
+    ) ||
     !isNonEmptyString(value.sessionId) ||
+    (hasOwner &&
+      (!isSessionOwnerV1(value.owner) ||
+        value.owner.sessionId !== value.sessionId)) ||
     !isSearchContextV1(value.context) ||
     !Array.isArray(value.candidates) ||
     !isFiniteNonNegativeNumber(value.updatedAt)
@@ -117,9 +124,19 @@ function isSessionState(value) {
 }
 
 function isActiveContextState(value) {
+  const hasOwner = isRecord(value) && Object.hasOwn(value, "owner");
   return Boolean(
-    hasExactKeys(value, ["sessionId", "context", "activatedAt"]) &&
-      isNonEmptyString(value.sessionId) &&
+    hasExactKeys(
+      value,
+      hasOwner
+        ? ["sessionId", "owner", "context", "activatedAt"]
+        : ["sessionId", "context", "activatedAt"]
+    ) &&
+    isNonEmptyString(value.sessionId) &&
+      (!hasOwner ||
+        (isSessionOwnerV1(value.owner) &&
+          value.owner.sessionId === value.sessionId &&
+          value.owner.frameId === 0)) &&
       isSearchContextV1(value.context) &&
       isFiniteNonNegativeNumber(value.activatedAt)
   );
@@ -136,14 +153,25 @@ function isChosen(value) {
 }
 
 function isSessionFinalization(value) {
+  const hasOwner = isRecord(value) && Object.hasOwn(value, "owner");
   return Boolean(
-    hasExactKeys(value, [
-      "sessionId",
-      "finalizedAt",
-      "chosenIds",
-      "missedPathIds"
-    ]) &&
-      isNonEmptyString(value.sessionId) &&
+    hasExactKeys(
+      value,
+      hasOwner
+        ? [
+            "sessionId",
+            "owner",
+            "finalizedAt",
+            "chosenIds",
+            "missedPathIds"
+          ]
+        : ["sessionId", "finalizedAt", "chosenIds", "missedPathIds"]
+    ) &&
+    isNonEmptyString(value.sessionId) &&
+      (!hasOwner ||
+        (isSessionOwnerV1(value.owner) &&
+          value.owner.sessionId === value.sessionId &&
+          value.owner.frameId === 0)) &&
       isFiniteNonNegativeNumber(value.finalizedAt) &&
       isStringList(value.chosenIds) &&
       new Set(value.chosenIds).size === value.chosenIds.length &&
@@ -175,6 +203,44 @@ function recordKey(kind, id) {
   return `${kind}:${id}`;
 }
 
+export function createSessionOwnerKey(owner) {
+  if (!isSessionOwnerV1(owner) || owner.frameId !== 0) {
+    throw new RepositoryDataError(
+      "Repository requires a valid main-frame Session Owner."
+    );
+  }
+  return [
+    `tab-${owner.tabId}`,
+    `document-${encodeURIComponent(owner.documentId)}`,
+    `frame-${owner.frameId}`,
+    `session-${encodeURIComponent(owner.sessionId)}`
+  ].join(":");
+}
+
+function sessionRecordId(sessionId, owner) {
+  if (owner === undefined || owner === null) {
+    return sessionId;
+  }
+  if (!isNonEmptyString(sessionId) || owner.sessionId !== sessionId) {
+    throw new RepositoryDataError(
+      "Session Owner conflicts with the message Session ID."
+    );
+  }
+  return createSessionOwnerKey(owner);
+}
+
+function activeContextRecordId(owner) {
+  if (owner === undefined || owner === null) {
+    return ACTIVE_CONTEXT_ID;
+  }
+  createSessionOwnerKey(owner);
+  return [
+    `tab-${owner.tabId}`,
+    `document-${encodeURIComponent(owner.documentId)}`,
+    `frame-${owner.frameId}`
+  ].join(":");
+}
+
 function assertAdapter(adapter) {
   if (!isRecord(adapter)) {
     throw new TypeError("Repository requires a storage adapter.");
@@ -200,33 +266,171 @@ function assertAdapter(adapter) {
 export function createRepository(adapter) {
   assertAdapter(adapter);
 
-  async function hasCompatibleVersion() {
-    const metadata = await adapter.get(REPOSITORY_SCHEMA_KEY);
-    if (metadata === undefined) {
-      return false;
+  let compatibilityOperation = null;
+
+  function validateMigratableRecord(entry) {
+    if (
+      !hasExactKeys(entry, ["key", "value"]) ||
+      !isNonEmptyString(entry.key) ||
+      !hasExactKeys(entry.value, ["schemaVersion", "kind", "id", "data"])
+    ) {
+      throw new RepositoryDataError(
+        "Legacy repository contains an invalid storage entry."
+      );
     }
 
-    if (
-      !hasExactKeys(metadata, ["schemaVersion"]) ||
-      metadata.schemaVersion !== SCHEMA_VERSION
-    ) {
-      throw new RepositoryVersionError(metadata?.schemaVersion);
+    const record = entry.value;
+    if (record.schemaVersion !== MIGRATABLE_SCHEMA_VERSION) {
+      throw new RepositoryVersionError(record.schemaVersion);
     }
-    return true;
+    if (
+      !Object.values(REPOSITORY_KINDS).includes(record.kind) ||
+      !isNonEmptyString(record.id) ||
+      entry.key !== recordKey(record.kind, record.id)
+    ) {
+      throw new RepositoryDataError(
+        "Legacy repository record identity is invalid."
+      );
+    }
+
+    let dataIsValid = false;
+    switch (record.kind) {
+      case REPOSITORY_KINDS.ACTIVE_CONTEXT:
+        dataIsValid =
+          record.id === ACTIVE_CONTEXT_ID &&
+          !Object.hasOwn(record.data, "owner") &&
+          isActiveContextState(record.data);
+        break;
+      case REPOSITORY_KINDS.CHOSEN:
+        dataIsValid = isChosen(record.data) && record.data.id === record.id;
+        break;
+      case REPOSITORY_KINDS.MISSED_PATH:
+        dataIsValid =
+          isMissedPathV1(record.data) && record.data.id === record.id;
+        break;
+      case REPOSITORY_KINDS.REENCOUNTER:
+        dataIsValid =
+          isReencounterRecordV1(record.data) && record.data.id === record.id;
+        break;
+      case REPOSITORY_KINDS.SESSION:
+        dataIsValid =
+          isSessionState(record.data) &&
+          !Object.hasOwn(record.data, "owner") &&
+          record.data.sessionId === record.id;
+        break;
+      case REPOSITORY_KINDS.SESSION_FINALIZATION:
+        dataIsValid =
+          isSessionFinalization(record.data) &&
+          !Object.hasOwn(record.data, "owner") &&
+          record.data.sessionId === record.id;
+        break;
+      case REPOSITORY_KINDS.SETTINGS:
+        dataIsValid = record.id === SETTINGS_ID && isSettingsV1(record.data);
+        break;
+    }
+
+    if (!dataIsValid) {
+      throw new RepositoryDataError(
+        `Legacy ${String(record.kind)} data is invalid.`
+      );
+    }
+
+    return {
+      key: entry.key,
+      value: {
+        ...cloneJson(record),
+        schemaVersion: SCHEMA_VERSION
+      }
+    };
   }
 
-  async function ensureCompatibleVersion() {
-    if (await hasCompatibleVersion()) {
+  async function performCompatibilityCheck() {
+    const metadata = await adapter.get(REPOSITORY_SCHEMA_KEY);
+    if (metadata === undefined) {
+      const entries = await adapter.entries();
+      if (entries.length !== 0) {
+        throw new RepositoryVersionError(undefined);
+      }
+      await adapter.commit({
+        puts: [
+          {
+            key: REPOSITORY_SCHEMA_KEY,
+            value: { schemaVersion: SCHEMA_VERSION }
+          }
+        ]
+      });
       return;
     }
+
+    if (!hasExactKeys(metadata, ["schemaVersion"])) {
+      throw new RepositoryVersionError(metadata?.schemaVersion);
+    }
+    if (metadata.schemaVersion === SCHEMA_VERSION) {
+      return;
+    }
+    if (metadata.schemaVersion !== MIGRATABLE_SCHEMA_VERSION) {
+      throw new RepositoryVersionError(metadata.schemaVersion);
+    }
+
+    const entries = await adapter.entries();
+    const schemaEntries = entries.filter(
+      (entry) => entry?.key === REPOSITORY_SCHEMA_KEY
+    );
+    if (
+      schemaEntries.length !== 1 ||
+      !hasExactKeys(schemaEntries[0], ["key", "value"]) ||
+      !hasExactKeys(schemaEntries[0].value, ["schemaVersion"]) ||
+      schemaEntries[0].value.schemaVersion !== MIGRATABLE_SCHEMA_VERSION
+    ) {
+      throw new RepositoryVersionError(
+        schemaEntries[0]?.value?.schemaVersion
+      );
+    }
+
+    const migratedRecords = entries
+      .filter((entry) => entry.key !== REPOSITORY_SCHEMA_KEY)
+      .map(validateMigratableRecord);
     await adapter.commit({
       puts: [
+        ...migratedRecords,
         {
           key: REPOSITORY_SCHEMA_KEY,
           value: { schemaVersion: SCHEMA_VERSION }
         }
       ]
     });
+  }
+
+  function ensureCompatibleVersion() {
+    if (compatibilityOperation !== null) {
+      return compatibilityOperation;
+    }
+    const operation = performCompatibilityCheck();
+    compatibilityOperation = operation;
+    const clearOperation = () => {
+      if (compatibilityOperation === operation) {
+        compatibilityOperation = null;
+      }
+    };
+    void operation.then(clearOperation, clearOperation);
+    return operation;
+  }
+
+  async function hasCompatibleVersion() {
+    if (compatibilityOperation !== null) {
+      await compatibilityOperation;
+      return true;
+    }
+    const metadata = await adapter.get(REPOSITORY_SCHEMA_KEY);
+    if (metadata === undefined) {
+      const entries = await adapter.entries();
+      if (entries.length !== 0) {
+        throw new RepositoryVersionError(undefined);
+      }
+      return false;
+    }
+    await ensureCompatibleVersion();
+    return true;
   }
 
   function validateStoredRecord(record, expectedKind, expectedId) {
@@ -238,6 +442,22 @@ export function createRepository(adapter) {
     }
     if (record.kind !== expectedKind || record.id !== expectedId) {
       throw new RepositoryDataError("Stored repository record identity is invalid.");
+    }
+    if (
+      isRecord(record.data) &&
+      Object.hasOwn(record.data, "owner") &&
+      (expectedKind === REPOSITORY_KINDS.SESSION ||
+        expectedKind === REPOSITORY_KINDS.SESSION_FINALIZATION ||
+        expectedKind === REPOSITORY_KINDS.ACTIVE_CONTEXT)
+    ) {
+      const ownerRecordId = expectedKind === REPOSITORY_KINDS.ACTIVE_CONTEXT
+        ? activeContextRecordId(record.data.owner)
+        : sessionRecordId(record.data.sessionId, record.data.owner);
+      if (ownerRecordId !== expectedId) {
+        throw new RepositoryDataError(
+          "Stored repository owner identity is invalid."
+        );
+      }
     }
     return record.data;
   }
@@ -308,6 +528,29 @@ export function createRepository(adapter) {
       .map((record) => record.data);
   }
 
+  async function findOwnedActiveContextForTab(tabId) {
+    if (!Number.isInteger(tabId) || tabId < 0) {
+      throw new RepositoryDataError(
+        "Active Context tabId must be a non-negative integer."
+      );
+    }
+    const ownedContexts = (await listRecords(
+      REPOSITORY_KINDS.ACTIVE_CONTEXT,
+      isActiveContextState
+    )).filter(
+      (activeContext) =>
+        Object.hasOwn(activeContext, "owner") &&
+        activeContext.owner.tabId === tabId &&
+        activeContext.owner.frameId === 0
+    );
+    ownedContexts.sort(
+      (left, right) =>
+        right.activatedAt - left.activatedAt ||
+        right.owner.documentId.localeCompare(left.owner.documentId)
+    );
+    return ownedContexts[0] ?? null;
+  }
+
   async function deleteRecord(kind, id, validator) {
     const existing = await getRecord(kind, id, validator);
     if (existing === null) {
@@ -353,14 +596,17 @@ export function createRepository(adapter) {
     },
 
     saveSession(session) {
+      const owner = isRecord(session) && Object.hasOwn(session, "owner")
+        ? session.owner
+        : undefined;
       return saveRecord(
         REPOSITORY_KINDS.SESSION,
-        session?.sessionId,
+        sessionRecordId(session?.sessionId, owner),
         session,
         isSessionState
       );
     },
-    async mergeDiscoveredCandidates(discovery) {
+    async mergeDiscoveredCandidates(discovery, owner) {
       if (
         !hasExactKeys(discovery, [
           "sessionId",
@@ -399,24 +645,26 @@ export function createRepository(adapter) {
       }
 
       await ensureCompatibleVersion();
+      const ownedSessionId = sessionRecordId(discovery.sessionId, owner);
+      const ownedActiveContextId = activeContextRecordId(owner);
       const sessionKey = recordKey(
         REPOSITORY_KINDS.SESSION,
-        discovery.sessionId
+        ownedSessionId
       );
       const finalizationKey = recordKey(
         REPOSITORY_KINDS.SESSION_FINALIZATION,
-        discovery.sessionId
+        ownedSessionId
       );
       const activeContextKey = recordKey(
         REPOSITORY_KINDS.ACTIVE_CONTEXT,
-        ACTIVE_CONTEXT_ID
+        ownedActiveContextId
       );
       const storedFinalization = await adapter.get(finalizationKey);
       if (storedFinalization !== undefined) {
         const finalization = validateStoredRecord(
           storedFinalization,
           REPOSITORY_KINDS.SESSION_FINALIZATION,
-          discovery.sessionId
+          ownedSessionId
         );
         if (!isSessionFinalization(finalization)) {
           throw new RepositoryDataError(
@@ -433,6 +681,9 @@ export function createRepository(adapter) {
       if (storedSession === undefined) {
         session = {
           sessionId: discovery.sessionId,
+          ...(owner === undefined || owner === null
+            ? {}
+            : { owner: cloneJson(owner) }),
           context: cloneJson(discovery.context),
           candidates: [],
           updatedAt: discovery.discoveredAt
@@ -441,7 +692,7 @@ export function createRepository(adapter) {
         session = validateStoredRecord(
           storedSession,
           REPOSITORY_KINDS.SESSION,
-          discovery.sessionId
+          ownedSessionId
         );
         if (!isSessionState(session)) {
           throw new RepositoryDataError("Stored session data is invalid.");
@@ -514,7 +765,7 @@ export function createRepository(adapter) {
         activeContext = validateStoredRecord(
           storedActiveContext,
           REPOSITORY_KINDS.ACTIVE_CONTEXT,
-          ACTIVE_CONTEXT_ID
+          ownedActiveContextId
         );
         if (!isActiveContextState(activeContext)) {
           throw new RepositoryDataError("Stored active-context data is invalid.");
@@ -529,6 +780,51 @@ export function createRepository(adapter) {
         }
       }
 
+      const staleActiveContextKeys = [];
+      let shouldActivateContext = true;
+      if (owner !== undefined && owner !== null) {
+        const sameTabContexts = [];
+        const prefix = `${REPOSITORY_KINDS.ACTIVE_CONTEXT}:`;
+        for (const entry of await adapter.entries()) {
+          if (!entry.key.startsWith(prefix)) {
+            continue;
+          }
+          const id = entry.key.slice(prefix.length);
+          const data = validateStoredRecord(
+            entry.value,
+            REPOSITORY_KINDS.ACTIVE_CONTEXT,
+            id
+          );
+          if (
+            !isActiveContextState(data) ||
+            !Object.hasOwn(data, "owner") ||
+            data.owner.tabId !== owner.tabId
+          ) {
+            continue;
+          }
+          sameTabContexts.push({ key: entry.key, data });
+        }
+        sameTabContexts.sort(
+          (left, right) =>
+            right.data.activatedAt - left.data.activatedAt ||
+            right.data.owner.documentId.localeCompare(
+              left.data.owner.documentId
+            )
+        );
+        const latest = sameTabContexts[0]?.data ?? null;
+        shouldActivateContext =
+          latest === null ||
+          latest.owner.documentId === owner.documentId ||
+          discovery.discoveredAt >= latest.activatedAt;
+        if (shouldActivateContext) {
+          staleActiveContextKeys.push(
+            ...sameTabContexts
+              .filter(({ key }) => key !== activeContextKey)
+              .map(({ key }) => key)
+          );
+        }
+      }
+
       const puts = [];
       if (acceptedCandidateIds.length > 0) {
         session.updatedAt = Math.max(
@@ -539,27 +835,38 @@ export function createRepository(adapter) {
           key: sessionKey,
           value: createStoredRecord(
             REPOSITORY_KINDS.SESSION,
-            discovery.sessionId,
+            ownedSessionId,
             session
           )
         });
       }
-      if (activeContext?.sessionId !== discovery.sessionId) {
+      if (
+        shouldActivateContext &&
+        activeContext?.sessionId !== discovery.sessionId
+      ) {
         puts.push({
           key: activeContextKey,
           value: createStoredRecord(
             REPOSITORY_KINDS.ACTIVE_CONTEXT,
-            ACTIVE_CONTEXT_ID,
+            ownedActiveContextId,
             {
               sessionId: discovery.sessionId,
+              ...(owner === undefined || owner === null
+                ? {}
+                : { owner: cloneJson(owner) }),
               context: discovery.context,
               activatedAt: discovery.discoveredAt
             }
           )
         });
       }
-      if (puts.length > 0) {
-        await adapter.commit({ puts });
+      if (puts.length > 0 || staleActiveContextKeys.length > 0) {
+        await adapter.commit({
+          puts,
+          ...(staleActiveContextKeys.length > 0
+            ? { deletes: staleActiveContextKeys }
+            : {})
+        });
       }
 
       return {
@@ -569,8 +876,12 @@ export function createRepository(adapter) {
         updatedAt: session.updatedAt
       };
     },
-    getSession(sessionId) {
-      return getRecord(REPOSITORY_KINDS.SESSION, sessionId, isSessionState);
+    getSession(sessionId, owner) {
+      return getRecord(
+        REPOSITORY_KINDS.SESSION,
+        sessionRecordId(sessionId, owner),
+        isSessionState
+      );
     },
     listSessions() {
       return listRecords(REPOSITORY_KINDS.SESSION, isSessionState);
@@ -581,9 +892,6 @@ export function createRepository(adapter) {
         ACTIVE_CONTEXT_ID
       );
       if (!(await hasCompatibleVersion())) {
-        if ((await adapter.get(key)) !== undefined) {
-          throw new RepositoryVersionError(undefined);
-        }
         return null;
       }
       const record = await adapter.get(key);
@@ -600,7 +908,10 @@ export function createRepository(adapter) {
       }
       return cloneJson(data);
     },
-    async mergeCandidateSignalsSnapshot(update) {
+    async getActiveContextForTab(tabId) {
+      return findOwnedActiveContextForTab(tabId);
+    },
+    async mergeCandidateSignalsSnapshot(update, owner) {
       if (
         !hasExactKeys(update, ["signals", "updatedAt"]) ||
         !isCandidateSignalsV1(update.signals) ||
@@ -611,9 +922,10 @@ export function createRepository(adapter) {
 
       await ensureCompatibleVersion();
       const { signals, updatedAt } = update;
+      const ownedSessionId = sessionRecordId(signals.sessionId, owner);
       const sessionKey = recordKey(
         REPOSITORY_KINDS.SESSION,
-        signals.sessionId
+        ownedSessionId
       );
       const storedSession = await adapter.get(sessionKey);
       if (storedSession === undefined) {
@@ -625,7 +937,7 @@ export function createRepository(adapter) {
       const session = validateStoredRecord(
         storedSession,
         REPOSITORY_KINDS.SESSION,
-        signals.sessionId
+        ownedSessionId
       );
       if (!isSessionState(session)) {
         throw new RepositoryDataError("Stored session data is invalid.");
@@ -633,14 +945,14 @@ export function createRepository(adapter) {
 
       const finalizationKey = recordKey(
         REPOSITORY_KINDS.SESSION_FINALIZATION,
-        signals.sessionId
+        ownedSessionId
       );
       const storedFinalization = await adapter.get(finalizationKey);
       if (storedFinalization !== undefined) {
         const finalization = validateStoredRecord(
           storedFinalization,
           REPOSITORY_KINDS.SESSION_FINALIZATION,
-          signals.sessionId
+          ownedSessionId
         );
         if (!isSessionFinalization(finalization)) {
           throw new RepositoryDataError(
@@ -688,7 +1000,7 @@ export function createRepository(adapter) {
               key: sessionKey,
               value: createStoredRecord(
                 REPOSITORY_KINDS.SESSION,
-                signals.sessionId,
+                ownedSessionId,
                 nextSession
               )
             }
@@ -709,7 +1021,7 @@ export function createRepository(adapter) {
         changed: false
       };
     },
-    async markCandidateChosen(sessionId, candidateId, updatedAt) {
+    async markCandidateChosen(sessionId, candidateId, updatedAt, owner) {
       if (
         !isNonEmptyString(sessionId) ||
         !isNonEmptyString(candidateId) ||
@@ -721,7 +1033,11 @@ export function createRepository(adapter) {
       }
 
       await ensureCompatibleVersion();
-      const sessionKey = recordKey(REPOSITORY_KINDS.SESSION, sessionId);
+      const ownedSessionId = sessionRecordId(sessionId, owner);
+      const sessionKey = recordKey(
+        REPOSITORY_KINDS.SESSION,
+        ownedSessionId
+      );
       const storedSession = await adapter.get(sessionKey);
       if (storedSession === undefined) {
         throw new RepositoryDataError(`Session not found: ${sessionId}`);
@@ -730,7 +1046,7 @@ export function createRepository(adapter) {
       const session = validateStoredRecord(
         storedSession,
         REPOSITORY_KINDS.SESSION,
-        sessionId
+        ownedSessionId
       );
       if (!isSessionState(session)) {
         throw new RepositoryDataError("Stored session data is invalid.");
@@ -750,14 +1066,14 @@ export function createRepository(adapter) {
 
       const finalizationKey = recordKey(
         REPOSITORY_KINDS.SESSION_FINALIZATION,
-        sessionId
+        ownedSessionId
       );
       const storedFinalization = await adapter.get(finalizationKey);
       if (storedFinalization !== undefined) {
         const finalization = validateStoredRecord(
           storedFinalization,
           REPOSITORY_KINDS.SESSION_FINALIZATION,
-          sessionId
+          ownedSessionId
         );
         if (!isSessionFinalization(finalization)) {
           throw new RepositoryDataError(
@@ -778,7 +1094,7 @@ export function createRepository(adapter) {
             key: sessionKey,
             value: createStoredRecord(
               REPOSITORY_KINDS.SESSION,
-              sessionId,
+              ownedSessionId,
               nextSession
             )
           }
@@ -786,10 +1102,12 @@ export function createRepository(adapter) {
       });
       return true;
     },
-    async deleteSession(sessionId) {
+    async deleteSession(sessionId, owner) {
+      const ownedSessionId = sessionRecordId(sessionId, owner);
+      const ownedActiveContextId = activeContextRecordId(owner);
       const existing = await getRecord(
         REPOSITORY_KINDS.SESSION,
-        sessionId,
+        ownedSessionId,
         isSessionState
       );
       if (existing === null) {
@@ -797,17 +1115,17 @@ export function createRepository(adapter) {
       }
       const activeContext = await getRecord(
         REPOSITORY_KINDS.ACTIVE_CONTEXT,
-        ACTIVE_CONTEXT_ID,
+        ownedActiveContextId,
         isActiveContextState
       );
       await adapter.commit({
         deletes: [
-          recordKey(REPOSITORY_KINDS.SESSION, sessionId),
+          recordKey(REPOSITORY_KINDS.SESSION, ownedSessionId),
           ...(activeContext?.sessionId === sessionId
             ? [
                 recordKey(
                   REPOSITORY_KINDS.ACTIVE_CONTEXT,
-                  ACTIVE_CONTEXT_ID
+                  ownedActiveContextId
                 )
               ]
             : [])
@@ -816,15 +1134,15 @@ export function createRepository(adapter) {
       return true;
     },
 
-    getSessionFinalization(sessionId) {
+    getSessionFinalization(sessionId, owner) {
       return getRecord(
         REPOSITORY_KINDS.SESSION_FINALIZATION,
-        sessionId,
+        sessionRecordId(sessionId, owner),
         isSessionFinalization
       );
     },
 
-    async finalizeSessionAtomically(finalization) {
+    async finalizeSessionAtomically(finalization, owner) {
       if (
         !hasExactKeys(finalization, [
           "sessionId",
@@ -868,13 +1186,18 @@ export function createRepository(adapter) {
       }
 
       await ensureCompatibleVersion();
+      const ownedSessionId = sessionRecordId(
+        finalization.sessionId,
+        owner
+      );
+      const ownedActiveContextId = activeContextRecordId(owner);
       const markerKey = recordKey(
         REPOSITORY_KINDS.SESSION_FINALIZATION,
-        finalization.sessionId
+        ownedSessionId
       );
       const activeContextKey = recordKey(
         REPOSITORY_KINDS.ACTIVE_CONTEXT,
-        ACTIVE_CONTEXT_ID
+        ownedActiveContextId
       );
       const storedActiveContext = await adapter.get(activeContextKey);
       let clearsActiveContext = false;
@@ -882,7 +1205,7 @@ export function createRepository(adapter) {
         const activeContext = validateStoredRecord(
           storedActiveContext,
           REPOSITORY_KINDS.ACTIVE_CONTEXT,
-          ACTIVE_CONTEXT_ID
+          ownedActiveContextId
         );
         if (!isActiveContextState(activeContext)) {
           throw new RepositoryDataError("Stored active-context data is invalid.");
@@ -895,7 +1218,7 @@ export function createRepository(adapter) {
         const marker = validateStoredRecord(
           existingMarker,
           REPOSITORY_KINDS.SESSION_FINALIZATION,
-          finalization.sessionId
+          ownedSessionId
         );
         if (!isSessionFinalization(marker)) {
           throw new RepositoryDataError(
@@ -910,6 +1233,9 @@ export function createRepository(adapter) {
 
       const marker = {
         sessionId: finalization.sessionId,
+        ...(owner === undefined || owner === null
+          ? {}
+          : { owner: cloneJson(owner) }),
         finalizedAt: finalization.finalizedAt,
         chosenIds,
         missedPathIds
@@ -939,7 +1265,7 @@ export function createRepository(adapter) {
         key: markerKey,
         value: createStoredRecord(
           REPOSITORY_KINDS.SESSION_FINALIZATION,
-          finalization.sessionId,
+          ownedSessionId,
           marker
         )
       });
@@ -1016,7 +1342,7 @@ export function createRepository(adapter) {
         isReencounterRecordV1
       );
     },
-    async recordReencounterShown(reencounter) {
+    async recordReencounterShown(reencounter, tabId) {
       if (
         !isReencounterRecordV1(reencounter) ||
         Object.hasOwn(reencounter, "outcome")
@@ -1045,24 +1371,18 @@ export function createRepository(adapter) {
         throw new RepositoryDataError("Stored missed-path data is invalid.");
       }
 
-      const activeContextKey = recordKey(
-        REPOSITORY_KINDS.ACTIVE_CONTEXT,
-        ACTIVE_CONTEXT_ID
-      );
-      const storedActiveContext = await adapter.get(activeContextKey);
-      if (storedActiveContext === undefined) {
+      const activeContext = tabId === undefined
+        ? await getRecord(
+            REPOSITORY_KINDS.ACTIVE_CONTEXT,
+            ACTIVE_CONTEXT_ID,
+            isActiveContextState
+          )
+        : await findOwnedActiveContextForTab(tabId);
+      if (activeContext === null) {
         throw new RepositoryDataError(
           "Re-encounter shown has no active SearchContext.",
           "REENCOUNTER_SHOWN_STALE"
         );
-      }
-      const activeContext = validateStoredRecord(
-        storedActiveContext,
-        REPOSITORY_KINDS.ACTIVE_CONTEXT,
-        ACTIVE_CONTEXT_ID
-      );
-      if (!isActiveContextState(activeContext)) {
-        throw new RepositoryDataError("Stored active-context data is invalid.");
       }
       if (!isSameJson(activeContext.context, reencounter.triggerContext)) {
         throw new RepositoryDataError(

@@ -18,6 +18,7 @@ import {
   createMissedPathsQueryMessage,
   createPingMessage,
   createPongMessage,
+  createSchemaVersionUnsupportedResponse,
   createReencounterQueryMessage,
   createReencounterFeedbackMessage,
   createReencounterShownMessage,
@@ -669,7 +670,7 @@ test("shared ResponseMessage factories create strict success and error shapes", 
     ),
     true
   );
-  assert.equal(isResponseMessage({ ...success, schemaVersion: 2 }), false);
+  assert.equal(isResponseMessage({ ...success, schemaVersion: 1 }), false);
   assert.equal(isResponseMessage({ ...success, extra: true }), false);
   assert.equal(
     isResponseMessage({
@@ -1119,12 +1120,29 @@ test("RE_ENCOUNTER_FEEDBACK response strictly validates persisted feedback", () 
 
 test("keeps MESSAGE_SCHEMA_VERSION as the shared constant alias", () => {
   assert.equal(MESSAGE_SCHEMA_VERSION, SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 1);
+  assert.equal(SCHEMA_VERSION, 2);
+});
+
+test("creates an explicit refresh response for stale v1 pages", () => {
+  const response = createSchemaVersionUnsupportedResponse("request-v1", 1);
+
+  assert.equal(isResponseMessage(response), false);
+  assert.deepEqual(response, {
+    schemaVersion: 1,
+    requestId: "request-v1",
+    ok: false,
+    error: {
+      code: RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED,
+      message:
+        "This page is still using schemaVersion 1; expected 2. Refresh the page before retrying.",
+      retryable: false
+    }
+  });
 });
 
 test("all message validators reject wrong schemaVersion and type", () => {
   for (const { validator, message, wrongType } of messageCases) {
-    assert.equal(validator({ ...message, schemaVersion: 2 }), false);
+    assert.equal(validator({ ...message, schemaVersion: 1 }), false);
     assert.equal(validator({ ...message, type: wrongType }), false);
   }
 });
@@ -1300,6 +1318,59 @@ test("Service Worker still answers a valid PING with a correlated PONG", async (
     assert.equal(response.requestId, request.requestId);
     assert.equal(response.payload.requestSource, "side-panel");
     assert.equal(response.payload.responder, "service-worker");
+  } finally {
+    delete globalThis.chrome;
+  }
+});
+
+test("Service Worker rejects stale v1 page messages and asks for a refresh", async () => {
+  let messageListener;
+
+  globalThis.chrome = {
+    runtime: {
+      onInstalled: { addListener() {} },
+      onMessage: {
+        addListener(listener) {
+          messageListener = listener;
+        }
+      }
+    },
+    sidePanel: {
+      setPanelBehavior() {
+        return Promise.resolve();
+      }
+    }
+  };
+
+  try {
+    await import("../background/serviceWorker.js?stale-v1-message-test");
+    for (const request of [
+      { ...createPingMessage("stale-page"), schemaVersion: 1 },
+      {
+        ...createCandidateChosenMessage({
+          id: "candidate-v1",
+          sessionId: "session-v1"
+        }),
+        schemaVersion: 1
+      }
+    ]) {
+      let response;
+      const listenerResult = messageListener(
+        request,
+        { url: "https://search.bilibili.com/all?keyword=stale" },
+        (value) => {
+          response = value;
+        }
+      );
+
+      assert.equal(listenerResult, false);
+      assert.equal(response.schemaVersion, 1);
+      assert.equal(
+        response.error.code,
+        RESPONSE_ERROR_CODES.SCHEMA_VERSION_UNSUPPORTED
+      );
+      assert.match(response.error.message, /Refresh the page/u);
+    }
   } finally {
     delete globalThis.chrome;
   }

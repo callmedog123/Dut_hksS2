@@ -1,8 +1,10 @@
 import {
   MESSAGE_TYPES,
   RESPONSE_ERROR_CODES,
+  SCHEMA_VERSION,
   createErrorResponseMessage,
   createPongMessage,
+  createSchemaVersionUnsupportedResponse,
   createSuccessResponseMessage,
   isCandidateChosenMessage,
   isPingMessage
@@ -12,6 +14,10 @@ import { createRepository } from "../storage/repository.js";
 import { createMessageRouter } from "./messageRouter.js";
 import { createSessionFinalizeUseCase } from "./sessionFinalize.js";
 import { createSessionManager } from "./sessionManager.js";
+import {
+  SessionOwnerError,
+  createSessionOwnerFromSender
+} from "./sessionOwner.js";
 
 let repository;
 function getRepository() {
@@ -30,14 +36,18 @@ function getSessionManager() {
 }
 
 const sessionFinalizeUseCase = createSessionFinalizeUseCase({
-  finalizeSession(sessionId, finalizedAt) {
-    return getSessionManager().finalizeSession(sessionId, finalizedAt);
+  finalizeSession(sessionId, finalizedAt, owner) {
+    return getSessionManager().finalizeSession(
+      sessionId,
+      finalizedAt,
+      owner
+    );
   }
 });
 
 const messageRouter = createMessageRouter({
-  getActiveContext() {
-    return getRepository().getActiveContext();
+  getActiveContextForTab(tabId) {
+    return getRepository().getActiveContextForTab(tabId);
   },
   getSettings() {
     return getRepository().getSettings();
@@ -45,11 +55,11 @@ const messageRouter = createMessageRouter({
   saveSettings(settings) {
     return getRepository().saveSettings(settings);
   },
-  mergeDiscoveredCandidates(payload) {
-    return getRepository().mergeDiscoveredCandidates(payload);
+  mergeDiscoveredCandidates(payload, owner) {
+    return getRepository().mergeDiscoveredCandidates(payload, owner);
   },
-  mergeCandidateSignalsSnapshot(payload) {
-    return getRepository().mergeCandidateSignalsSnapshot(payload);
+  mergeCandidateSignalsSnapshot(payload, owner) {
+    return getRepository().mergeCandidateSignalsSnapshot(payload, owner);
   },
   listMissedPaths() {
     return getRepository().listMissedPaths();
@@ -66,12 +76,107 @@ const messageRouter = createMessageRouter({
   recordReencounterFeedback(payload) {
     return getRepository().recordReencounterFeedback(payload);
   },
-  recordReencounterShown(payload) {
-    return getRepository().recordReencounterShown(payload);
+  recordReencounterShown(payload, tabId) {
+    return getRepository().recordReencounterShown(payload, tabId);
   }
 }, {
   sessionFinalizeUseCase
 });
+
+async function queryActiveTabId() {
+  if (typeof chrome.tabs?.query !== "function") {
+    throw new Error("Chrome Tabs query is unavailable.");
+  }
+  const tabs = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true
+  });
+  const tabId = tabs.find((tab) => Number.isInteger(tab?.id))?.id;
+  if (!Number.isInteger(tabId) || tabId < 0) {
+    throw new Error("The active tab does not have an ID.");
+  }
+  return tabId;
+}
+
+function getMessageSessionId(message) {
+  return message?.type === MESSAGE_TYPES.SIGNALS_UPDATED
+    ? message?.payload?.signals?.sessionId
+    : message?.payload?.sessionId;
+}
+
+function requiresSessionOwner(message) {
+  return (
+    message?.type === MESSAGE_TYPES.CANDIDATE_CHOSEN ||
+    message?.type === MESSAGE_TYPES.CANDIDATES_DISCOVERED ||
+    message?.type === MESSAGE_TYPES.SESSION_FINALIZE ||
+    message?.type === MESSAGE_TYPES.SIGNALS_UPDATED
+  );
+}
+
+async function handleCurrentMessage(message, sender) {
+  try {
+    const routingContext = {};
+    if (requiresSessionOwner(message)) {
+      routingContext.sessionOwner = createSessionOwnerFromSender(
+        sender,
+        getMessageSessionId(message)
+      );
+    }
+    if (
+      message?.type === MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY ||
+      message?.type === MESSAGE_TYPES.RE_ENCOUNTER_SHOWN
+    ) {
+      routingContext.activeTabId = await queryActiveTabId();
+    }
+
+    if (message?.type === MESSAGE_TYPES.CANDIDATE_CHOSEN) {
+      if (!isCandidateChosenMessage(message)) {
+        return createErrorResponseMessage(message.requestId, {
+          code: RESPONSE_ERROR_CODES.INVALID_REQUEST,
+          message: `Invalid ${MESSAGE_TYPES.CANDIDATE_CHOSEN} payload.`,
+          retryable: false
+        });
+      }
+      const settings = await getRepository().getSettings();
+      if (!settings.enabled) {
+        return createErrorResponseMessage(message.requestId, {
+          code: RESPONSE_ERROR_CODES.COLLECTION_PAUSED,
+          message: "Collection is paused in Settings.",
+          retryable: false
+        });
+      }
+      const candidateChosen = await getSessionManager().recordCandidateChosen(
+        message.payload.sessionId,
+        message.payload.candidateId,
+        message.payload.chosenAt,
+        routingContext.sessionOwner
+      );
+      return createSuccessResponseMessage(message.requestId, {
+        candidateChosen
+      });
+    }
+
+    return await messageRouter.route(message, routingContext);
+  } catch (error) {
+    if (error instanceof SessionOwnerError) {
+      return createErrorResponseMessage(message.requestId, {
+        code: RESPONSE_ERROR_CODES.INVALID_REQUEST,
+        message: error.message,
+        retryable: false
+      });
+    }
+    console.error("[The Unclicked] Background request failed.", error);
+    return createErrorResponseMessage(message.requestId, {
+      code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
+      message:
+        message?.type === MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY ||
+        message?.type === MESSAGE_TYPES.RE_ENCOUNTER_SHOWN
+          ? "Unable to determine the current active tab."
+          : "Unable to persist the chosen Candidate.",
+      retryable: true
+    });
+  }
+}
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel
@@ -85,6 +190,21 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (
+    Object.values(MESSAGE_TYPES).includes(message?.type) &&
+    typeof message?.requestId === "string" &&
+    message.requestId.length > 0 &&
+    message.schemaVersion !== SCHEMA_VERSION
+  ) {
+    sendResponse(
+      createSchemaVersionUnsupportedResponse(
+        message.requestId,
+        message.schemaVersion
+      )
+    );
+    return false;
+  }
+
   if (isPingMessage(message)) {
     const response = createPongMessage(message, "service-worker");
     console.info("[The Unclicked] PING received.", {
@@ -96,53 +216,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  if (isCandidateChosenMessage(message)) {
-    getRepository()
-      .getSettings()
-      .then((settings) => {
-        if (!settings.enabled) {
-          sendResponse(
-            createErrorResponseMessage(message.requestId, {
-              code: RESPONSE_ERROR_CODES.COLLECTION_PAUSED,
-              message: "Collection is paused in Settings.",
-              retryable: false
-            })
-          );
-          return null;
-        }
-        return getSessionManager().recordCandidateChosen(
-          message.payload.sessionId,
-          message.payload.candidateId,
-          message.payload.chosenAt
-        );
-      })
-      .then((candidateChosen) => {
-        if (candidateChosen === null) {
-          return;
-        }
-        sendResponse(
-          createSuccessResponseMessage(message.requestId, {
-            candidateChosen
-          })
-        );
-      })
-      .catch((error) => {
-        console.error(
-          "[The Unclicked] Failed to persist CANDIDATE_CHOSEN.",
-          error
-        );
-        sendResponse(
-          createErrorResponseMessage(message.requestId, {
-            code: RESPONSE_ERROR_CODES.STORAGE_ERROR,
-            message: "Unable to persist the chosen Candidate.",
-            retryable: true
-          })
-        );
-      });
-    return true;
-  }
-
   if (
+    message?.type !== MESSAGE_TYPES.CANDIDATE_CHOSEN &&
     message?.type !== MESSAGE_TYPES.ACTIVE_CONTEXT_QUERY &&
     message?.type !== MESSAGE_TYPES.CANDIDATES_DISCOVERED &&
     message?.type !== MESSAGE_TYPES.DATA_DELETE_ALL &&
@@ -158,6 +233,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  messageRouter.route(message).then(sendResponse);
+  handleCurrentMessage(message, sender).then(sendResponse);
   return true;
 });
