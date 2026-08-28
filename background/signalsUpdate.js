@@ -41,9 +41,9 @@ export function createSignalsUpdateUseCase(repository) {
 
   return Object.freeze({
     /** @param {object} payload */
-    async execute(payload, owner) {
+    async execute(payload) {
       try {
-        return await repository.mergeCandidateSignalsSnapshot(payload, owner);
+        return await repository.mergeCandidateSignalsSnapshot(payload);
       } catch (error) {
         if (error instanceof RepositoryVersionError) {
           throw new SignalsUpdateError(

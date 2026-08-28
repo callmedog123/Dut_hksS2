@@ -22,27 +22,27 @@ function isRecord(value) {
 function assertRepository(repository) {
   if (
     !isRecord(repository) ||
-    typeof repository.getActiveContextForTab !== "function"
+    typeof repository.getActiveContext !== "function"
   ) {
     throw new TypeError(
-      "Active Context query requires Repository.getActiveContextForTab()."
+      "Active Context query requires Repository.getActiveContext()."
     );
   }
 }
 
 /**
- * Read the latest durable active-context pointer owned by the active tab,
- * without modifying Repository state or creating Re-encounter records.
+ * Read the one durable active-context pointer without modifying Repository
+ * state or creating Re-encounter records.
  *
- * @param {{getActiveContextForTab: (tabId: number) => Promise<unknown>}} repository
+ * @param {{getActiveContext: () => Promise<unknown>}} repository
  */
 export function createActiveContextQueryUseCase(repository) {
   assertRepository(repository);
 
   return Object.freeze({
-    async execute(tabId) {
+    async execute() {
       try {
-        const activeContext = await repository.getActiveContextForTab(tabId);
+        const activeContext = await repository.getActiveContext();
         if (activeContext === null) {
           return {
             status: ACTIVE_CONTEXT_STATUSES.UNAVAILABLE,

@@ -2,9 +2,7 @@
 
 const DEFAULT_DATABASE_NAME = "the-unclicked-local";
 const DEFAULT_STORE_NAME = "repository-records";
-// Physical object-store layout version; Repository record schema is owned only
-// by shared/types.js and does not require an IndexedDB layout upgrade here.
-const INDEXED_DB_STRUCTURE_VERSION = 1;
+const INDEXED_DB_VERSION = 1;
 
 function requestToPromise(request) {
   return new Promise((resolve, reject) => {
@@ -86,7 +84,7 @@ export function createIndexedDbStorageAdapter(options = {}) {
     return new Promise((resolve, reject) => {
       const request = indexedDbFactory.open(
         databaseName,
-        INDEXED_DB_STRUCTURE_VERSION
+        INDEXED_DB_VERSION
       );
       request.onupgradeneeded = () => {
         const database = request.result;

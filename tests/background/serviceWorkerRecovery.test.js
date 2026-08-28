@@ -5,7 +5,6 @@ import { createSessionManager } from "../../background/sessionManager.js";
 import {
   ACTIVE_CONTEXT_STATUSES,
   REENCOUNTER_FEEDBACK_OUTCOMES,
-  SCHEMA_VERSION,
   createActiveContextQueryMessage,
   createCandidateChosenMessage,
   createCandidatesDiscoveredMessage,
@@ -25,12 +24,6 @@ import { createRepository } from "../../storage/repository.js";
 import { createFakeIndexedDB } from "../storage/fixtures/fakeIndexedDB.js";
 
 const NOW = 10_000_000_000;
-const DEFAULT_OWNER = Object.freeze({
-  tabId: 1,
-  documentId: "document-1",
-  frameId: 0,
-  sessionId: "session-1"
-});
 
 function createContext(timestamp = 100) {
   return {
@@ -112,7 +105,7 @@ function createReencounter() {
   };
 }
 
-async function loadServiceWorker(label, activeTabId = DEFAULT_OWNER.tabId) {
+async function loadServiceWorker(label) {
   let messageListener;
   globalThis.chrome = {
     runtime: {
@@ -127,15 +120,6 @@ async function loadServiceWorker(label, activeTabId = DEFAULT_OWNER.tabId) {
       setPanelBehavior() {
         return Promise.resolve();
       }
-    },
-    tabs: {
-      async query(queryInfo) {
-        assert.deepEqual(queryInfo, {
-          active: true,
-          lastFocusedWindow: true
-        });
-        return [{ id: activeTabId }];
-      }
     }
   };
 
@@ -146,79 +130,16 @@ async function loadServiceWorker(label, activeTabId = DEFAULT_OWNER.tabId) {
   return messageListener;
 }
 
-function dispatchAsync(listener, message, sender = {
-  url: "https://search.bilibili.com/all?keyword=robot",
-  tab: { id: DEFAULT_OWNER.tabId },
-  documentId: DEFAULT_OWNER.documentId,
-  frameId: DEFAULT_OWNER.frameId
-}) {
+function dispatchAsync(listener, message) {
   return new Promise((resolve) => {
-    const keepAlive = listener(message, sender, resolve);
+    const keepAlive = listener(
+      message,
+      { url: "chrome-extension://test/content.js" },
+      resolve
+    );
     assert.equal(keepAlive, true);
   });
 }
-
-test("Worker migrates v1 IndexedDB data before recovery queries", async () => {
-  const indexedDB = createFakeIndexedDB();
-  globalThis.indexedDB = indexedDB;
-  const adapter = createIndexedDbStorageAdapter({ indexedDB });
-  const missedPath = createMissedPath();
-  const settings = {
-    enabled: false,
-    allowlist: ["example.com"],
-    blocklist: [],
-    thresholds: { consideration: 0.55, reencounter: 0.6 },
-    demoMode: false
-  };
-  await adapter.commit({
-    puts: [
-      { key: "meta:schema", value: { schemaVersion: 1 } },
-      {
-        key: `missed-path:${missedPath.id}`,
-        value: {
-          schemaVersion: 1,
-          kind: "missed-path",
-          id: missedPath.id,
-          data: missedPath
-        }
-      },
-      {
-        key: "settings:current",
-        value: {
-          schemaVersion: 1,
-          kind: "settings",
-          id: "current",
-          data: settings
-        }
-      }
-    ]
-  });
-
-  try {
-    const firstWorker = await loadServiceWorker("v1-migration-first");
-    const firstResponse = await dispatchAsync(
-      firstWorker,
-      createMissedPathsQueryMessage("request-v1-migration-first")
-    );
-    assert.deepEqual(firstResponse.data, { missedPaths: [missedPath] });
-
-    const restartedWorker = await loadServiceWorker("v1-migration-restarted");
-    const restartedResponse = await dispatchAsync(
-      restartedWorker,
-      createMissedPathsQueryMessage("request-v1-migration-restarted")
-    );
-    assert.deepEqual(restartedResponse.data, { missedPaths: [missedPath] });
-    assert.equal(
-      (await adapter.entries()).every(
-        ({ value }) => value.schemaVersion === SCHEMA_VERSION
-      ),
-      true
-    );
-  } finally {
-    delete globalThis.chrome;
-    delete globalThis.indexedDB;
-  }
-});
 
 test("CANDIDATES_DISCOVERED merges persisted Sessions after Worker restart", async () => {
   const indexedDB = createFakeIndexedDB();
@@ -246,19 +167,11 @@ test("CANDIDATES_DISCOVERED merges persisted Sessions after Worker restart", asy
     const repository = createRepository(
       createIndexedDbStorageAdapter({ indexedDB })
     );
-    await repository.mergeCandidateSignalsSnapshot(
-      {
-        signals: {
-          ...createSignals(true),
-          visibleMs: 777,
-          hoverMs: 0,
-          hoverCount: 0,
-          returnCount: 0
-        },
-        updatedAt: 250
-      },
-      DEFAULT_OWNER
-    );
+    const sessionWithSignals = await repository.getSession("session-1");
+    sessionWithSignals.candidates[0].signals.visibleMs = 777;
+    sessionWithSignals.candidates[0].signals.clicked = true;
+    sessionWithSignals.updatedAt = 250;
+    await repository.saveSession(sessionWithSignals);
 
     const restartedWorker = await loadServiceWorker("discovery-restarted");
     const secondCandidate = createCandidate({
@@ -287,10 +200,7 @@ test("CANDIDATES_DISCOVERED merges persisted Sessions after Worker restart", asy
     const restartedRepository = createRepository(
       createIndexedDbStorageAdapter({ indexedDB })
     );
-    const persisted = await restartedRepository.getSession(
-      "session-1",
-      DEFAULT_OWNER
-    );
+    const persisted = await restartedRepository.getSession("session-1");
     assert.equal(persisted.candidates.length, 2);
     assert.deepEqual(persisted.candidates[0].signals, {
       candidateId: "candidate-1",
@@ -310,85 +220,6 @@ test("CANDIDATES_DISCOVERED merges persisted Sessions after Worker restart", asy
       returnCount: 0,
       clicked: false
     });
-  } finally {
-    delete globalThis.chrome;
-    delete globalThis.indexedDB;
-  }
-});
-
-test("Service Worker rejects forged owners and child frames, then trusts MessageSender", async () => {
-  const indexedDB = createFakeIndexedDB();
-  globalThis.indexedDB = indexedDB;
-
-  try {
-    const worker = await loadServiceWorker("owner-authority");
-    const message = createCandidatesDiscoveredMessage(
-      "session-1",
-      createContext(),
-      [createCandidate()],
-      200,
-      "request-owner-authority"
-    );
-    const authoritativeSender = {
-      url: "https://search.bilibili.com/all?keyword=robot",
-      tab: { id: 42 },
-      documentId: "document-authoritative",
-      frameId: 0
-    };
-
-    const forged = await dispatchAsync(
-      worker,
-      {
-        ...message,
-        requestId: "request-owner-forged",
-        payload: {
-          ...message.payload,
-          owner: {
-            tabId: 999,
-            documentId: "document-forged",
-            frameId: 0,
-            sessionId: "session-1"
-          }
-        }
-      },
-      authoritativeSender
-    );
-    assert.equal(forged.error.code, "INVALID_REQUEST");
-
-    const childFrame = await dispatchAsync(
-      worker,
-      { ...message, requestId: "request-owner-child-frame" },
-      { ...authoritativeSender, frameId: 2 }
-    );
-    assert.equal(childFrame.error.code, "INVALID_REQUEST");
-
-    const accepted = await dispatchAsync(
-      worker,
-      { ...message, requestId: "request-owner-accepted" },
-      authoritativeSender
-    );
-    assert.equal(accepted.ok, true);
-
-    const repository = createRepository(
-      createIndexedDbStorageAdapter({ indexedDB })
-    );
-    const authoritativeOwner = {
-      tabId: 42,
-      documentId: "document-authoritative",
-      frameId: 0,
-      sessionId: "session-1"
-    };
-    assert.deepEqual(
-      (await repository.getSession("session-1", authoritativeOwner)).owner,
-      authoritativeOwner
-    );
-    assert.equal(
-      await repository.getSession("session-1", {
-        ...authoritativeOwner,
-        tabId: 999
-      }),
-      null
-    );
   } finally {
     delete globalThis.chrome;
     delete globalThis.indexedDB;
@@ -476,93 +307,6 @@ test("ACTIVE_CONTEXT_QUERY restores and switches context after Worker restart", 
   }
 });
 
-test("ACTIVE_CONTEXT_QUERY follows the active tab and one tab finalize preserves the other", async () => {
-  const indexedDB = createFakeIndexedDB();
-  globalThis.indexedDB = indexedDB;
-
-  try {
-    const firstWorker = await loadServiceWorker("multi-tab-writes", 1);
-    const firstContext = createContext(100);
-    const secondContext = createContext(101);
-    const firstSender = {
-      url: "https://search.bilibili.com/all?keyword=robot",
-      tab: { id: 1 },
-      documentId: "document-tab-1",
-      frameId: 0
-    };
-    const secondSender = {
-      ...firstSender,
-      tab: { id: 2 },
-      documentId: "document-tab-2"
-    };
-
-    await dispatchAsync(
-      firstWorker,
-      createCandidatesDiscoveredMessage(
-        "session-1",
-        firstContext,
-        [createCandidate()],
-        100,
-        "request-tab-1-discovery"
-      ),
-      firstSender
-    );
-    await dispatchAsync(
-      firstWorker,
-      createCandidatesDiscoveredMessage(
-        "session-1",
-        secondContext,
-        [createCandidate()],
-        101,
-        "request-tab-2-discovery"
-      ),
-      secondSender
-    );
-
-    const tabTwoWorker = await loadServiceWorker("multi-tab-query-2", 2);
-    const tabTwoContext = await dispatchAsync(
-      tabTwoWorker,
-      createActiveContextQueryMessage("request-tab-2-context")
-    );
-    assert.deepEqual(tabTwoContext.data.context, secondContext);
-
-    const tabOneWorker = await loadServiceWorker("multi-tab-query-1", 1);
-    const tabOneContext = await dispatchAsync(
-      tabOneWorker,
-      createActiveContextQueryMessage("request-tab-1-context")
-    );
-    assert.deepEqual(tabOneContext.data.context, firstContext);
-    const finalized = await dispatchAsync(
-      tabOneWorker,
-      createSessionFinalizeMessage(
-        "session-1",
-        200,
-        "request-tab-1-finalize"
-      ),
-      firstSender
-    );
-    assert.equal(finalized.ok, true);
-
-    const restartedTabTwoWorker = await loadServiceWorker(
-      "multi-tab-query-2-restarted",
-      2
-    );
-    const preserved = await dispatchAsync(
-      restartedTabTwoWorker,
-      createActiveContextQueryMessage("request-tab-2-preserved")
-    );
-    assert.deepEqual(preserved.data.context, secondContext);
-
-    const repository = createRepository(
-      createIndexedDbStorageAdapter({ indexedDB })
-    );
-    assert.equal((await repository.listSessions()).length, 2);
-  } finally {
-    delete globalThis.chrome;
-    delete globalThis.indexedDB;
-  }
-});
-
 test("SIGNALS_UPDATED continues fieldwise merging after Worker restart", async () => {
   const indexedDB = createFakeIndexedDB();
   globalThis.indexedDB = indexedDB;
@@ -630,10 +374,7 @@ test("SIGNALS_UPDATED continues fieldwise merging after Worker restart", async (
     const restartedRepository = createRepository(
       createIndexedDbStorageAdapter({ indexedDB })
     );
-    const persisted = await restartedRepository.getSession(
-      "session-1",
-      DEFAULT_OWNER
-    );
+    const persisted = await restartedRepository.getSession("session-1");
     assert.equal(persisted.updatedAt, 300);
     assert.deepEqual(persisted.candidates[0].signals, {
       candidateId: "candidate-1",
@@ -658,19 +399,7 @@ test("SESSION_FINALIZE recovers the first durable result after Worker restart", 
     const repository = createRepository(
       createIndexedDbStorageAdapter({ indexedDB })
     );
-    await repository.mergeDiscoveredCandidates(
-      {
-        sessionId: "session-1",
-        context: createContext(),
-        candidates: [createCandidate()],
-        discoveredAt: 200
-      },
-      DEFAULT_OWNER
-    );
-    await repository.mergeCandidateSignalsSnapshot(
-      { signals: createSignals(), updatedAt: 200 },
-      DEFAULT_OWNER
-    );
+    await repository.saveSession(createSession());
 
     const firstWorker = await loadServiceWorker("finalize-first");
     const firstResponse = await dispatchAsync(
@@ -711,16 +440,12 @@ test("SESSION_FINALIZE recovers the first durable result after Worker restart", 
     );
     assert.equal((await restartedRepository.listMissedPaths()).length, 1);
     assert.deepEqual(
-      await restartedRepository.getSessionFinalization(
-        "session-1",
-        DEFAULT_OWNER
-      ),
+      await restartedRepository.getSessionFinalization("session-1"),
       {
         sessionId: "session-1",
-        owner: DEFAULT_OWNER,
         finalizedAt: 500,
         chosenIds: [],
-        missedPathIds: [firstResponse.data.missedPaths[0].id]
+        missedPathIds: ["session-1:candidate-1"]
       }
     );
   } finally {
@@ -737,19 +462,7 @@ test("CANDIDATE_CHOSEN persists aggregates and excludes Missed after Worker rest
     const repository = createRepository(
       createIndexedDbStorageAdapter({ indexedDB })
     );
-    await repository.mergeDiscoveredCandidates(
-      {
-        sessionId: "session-1",
-        context: createContext(),
-        candidates: [createCandidate()],
-        discoveredAt: 200
-      },
-      DEFAULT_OWNER
-    );
-    await repository.mergeCandidateSignalsSnapshot(
-      { signals: createSignals(), updatedAt: 200 },
-      DEFAULT_OWNER
-    );
+    await repository.saveSession(createSession());
 
     const firstWorker = await loadServiceWorker("chosen-first");
     const chosenMessage = createCandidateChosenMessage(
@@ -769,10 +482,7 @@ test("CANDIDATE_CHOSEN persists aggregates and excludes Missed after Worker rest
     const afterFirstWorker = createRepository(
       createIndexedDbStorageAdapter({ indexedDB })
     );
-    const persisted = await afterFirstWorker.getSession(
-      "session-1",
-      DEFAULT_OWNER
-    );
+    const persisted = await afterFirstWorker.getSession("session-1");
     assert.deepEqual(persisted.candidates[0].signals, createSignals(true));
 
     const restartedWorker = await loadServiceWorker("chosen-restarted");
@@ -791,7 +501,7 @@ test("CANDIDATE_CHOSEN persists aggregates and excludes Missed after Worker rest
     );
     const finalized = await createSessionManager(
       restartedRepository
-    ).finalizeSession("session-1", 500, DEFAULT_OWNER);
+    ).finalizeSession("session-1", 500);
     assert.equal(finalized.chosen.length, 1);
     assert.deepEqual(finalized.missedPaths, []);
 
@@ -800,8 +510,7 @@ test("CANDIDATE_CHOSEN persists aggregates and excludes Missed after Worker rest
     );
     const repeated = await afterSecondRestart.finalizeSession(
       "session-1",
-      1_000,
-      DEFAULT_OWNER
+      1_000
     );
     assert.equal(repeated.alreadyFinalized, true);
     assert.equal(repeated.finalizedAt, 500);
@@ -823,15 +532,12 @@ test("persisted Re-encounter cooldown remains active after Worker restart", asyn
     );
     const context = createContext(NOW);
     await repository.saveMissedPath(createMissedPath());
-    await repository.mergeDiscoveredCandidates(
-      {
-        sessionId: "session-1",
-        context,
-        candidates: [createCandidate()],
-        discoveredAt: NOW
-      },
-      DEFAULT_OWNER
-    );
+    await repository.mergeDiscoveredCandidates({
+      sessionId: "session-1",
+      context,
+      candidates: [createCandidate()],
+      discoveredAt: NOW
+    });
     const firstWorker = await loadServiceWorker("cooldown-first");
     const firstResponse = await dispatchAsync(
       firstWorker,
@@ -1071,24 +777,8 @@ test("DATA_DELETE_ALL stays empty after restart and preserves Settings", async (
     const repository = createRepository(
       createIndexedDbStorageAdapter({ indexedDB })
     );
-    await repository.mergeDiscoveredCandidates(
-      {
-        sessionId: "session-1",
-        context: createContext(),
-        candidates: [createCandidate()],
-        discoveredAt: 200
-      },
-      DEFAULT_OWNER
-    );
-    await repository.mergeCandidateSignalsSnapshot(
-      { signals: createSignals(), updatedAt: 200 },
-      DEFAULT_OWNER
-    );
-    await createSessionManager(repository).finalizeSession(
-      "session-1",
-      500,
-      DEFAULT_OWNER
-    );
+    await repository.saveSession(createSession());
+    await createSessionManager(repository).finalizeSession("session-1", 500);
     await repository.saveReencounter(createReencounter());
     await repository.saveSettings({
       enabled: false,

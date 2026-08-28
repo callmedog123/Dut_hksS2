@@ -45,12 +45,11 @@ export function createSessionFinalizeUseCase(sessionManager) {
 
   return Object.freeze({
     /** @param {{sessionId: string, finalizedAt: number}} payload */
-    async execute(payload, owner) {
+    async execute(payload) {
       try {
         return await sessionManager.finalizeSession(
           payload.sessionId,
-          payload.finalizedAt,
-          owner
+          payload.finalizedAt
         );
       } catch (error) {
         if (error instanceof RepositoryVersionError) {

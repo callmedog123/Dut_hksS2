@@ -29,13 +29,6 @@ function createCandidate() {
   };
 }
 
-const OWNER = Object.freeze({
-  tabId: 7,
-  documentId: "document-1",
-  frameId: 0,
-  sessionId: "session-1"
-});
-
 test("returns a successful unavailable state when no context is active", async () => {
   const adapter = createTransactionalMemoryStorageAdapter();
   const repository = createRepository(adapter);
@@ -45,29 +38,25 @@ test("returns a successful unavailable state when no context is active", async (
     status: ACTIVE_CONTEXT_STATUSES.UNAVAILABLE,
     context: null
   };
-  const commitsBeforeQuery = adapter.commitCount;
-  assert.deepEqual(await useCase.execute(OWNER.tabId), result);
-  assert.deepEqual(await useCase.execute(OWNER.tabId), result);
-  assert.equal(adapter.commitCount, commitsBeforeQuery + 1);
+  assert.deepEqual(await useCase.execute(), result);
+  assert.deepEqual(await useCase.execute(), result);
+  assert.equal(adapter.commitCount, 0);
 });
 
 test("returns the durable current SearchContext without exposing Repository metadata", async () => {
   const adapter = createTransactionalMemoryStorageAdapter();
   const repository = createRepository(adapter);
-  await repository.mergeDiscoveredCandidates(
-    {
-      sessionId: "session-1",
-      context: createContext(),
-      candidates: [createCandidate()],
-      discoveredAt: 200
-    },
-    OWNER
-  );
+  await repository.mergeDiscoveredCandidates({
+    sessionId: "session-1",
+    context: createContext(),
+    candidates: [createCandidate()],
+    discoveredAt: 200
+  });
   const commitsBeforeQuery = adapter.commitCount;
   const useCase = createActiveContextQueryUseCase(repository);
 
-  const first = await useCase.execute(OWNER.tabId);
-  const repeated = await useCase.execute(OWNER.tabId);
+  const first = await useCase.execute();
+  const repeated = await useCase.execute();
 
   assert.deepEqual(first, {
     status: ACTIVE_CONTEXT_STATUSES.AVAILABLE,
@@ -81,13 +70,13 @@ test("returns the durable current SearchContext without exposing Repository meta
 test("surfaces storage failures as retryable Active Context query errors", async () => {
   const failure = new Error("simulated storage failure");
   const useCase = createActiveContextQueryUseCase({
-    async getActiveContextForTab() {
+    async getActiveContext() {
       throw failure;
     }
   });
 
   await assert.rejects(
-    () => useCase.execute(OWNER.tabId),
+    () => useCase.execute(),
     (error) =>
       error instanceof ActiveContextQueryError &&
       error.code === "STORAGE_ERROR" &&

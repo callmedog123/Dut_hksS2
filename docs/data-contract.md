@@ -1,6 +1,6 @@
 # 数据契约
 
-The Unclicked 当前唯一共享契约版本是 `SCHEMA_VERSION = 2`。领域校验在 `shared/types.js`，Chrome 消息信封和 payload 校验在 `shared/messages.js`，持久化二次校验与 v1→v2 迁移在 `storage/repository.js`。领域 DTO 仍保留 `V1` 名称和字段，因为本次只升级消息与 Repository 信封版本，没有加入标签或其他业务字段。
+The Unclicked P0 的单一契约版本是 `SCHEMA_VERSION = 1`。领域校验在 `shared/types.js`，Chrome 消息信封和 payload 校验在 `shared/messages.js`，持久化二次校验在 `storage/repository.js`。
 
 ## 领域对象
 
@@ -30,15 +30,7 @@ Repository 的逻辑 kind 是：
 - `settings`：采集设置；
 - `meta:schema`：Repository schemaVersion。
 
-IndexedDB 只有 `repository-records` 一个对象仓库；逻辑 kind 通过 key 前缀区分。IndexedDB 自身的结构版本只控制对象仓库布局，与 `SCHEMA_VERSION` 记录契约无关；本次对象仓库布局未变化。
-
-首次访问 Repository 时：
-
-- 空库直接写入 v2 `meta:schema`；
-- v2 库直接继续使用，不重复改写；
-- v1 库会先验证全部记录的信封、kind、ID 和领域数据，再在一个 `commit` 中把全部记录信封和 `meta:schema` 原子升级为 v2；
-- 任一验证或写入失败都会保留完整 v1 状态，之后可以安全重试；
-- 未知版本以及缺少 `meta:schema` 的非空库明确失败，不会以清空数据代替迁移。
+IndexedDB 只有 `repository-records` 一个对象仓库；逻辑 kind 通过 key 前缀区分。
 
 ## 消息方向
 
@@ -58,7 +50,7 @@ IndexedDB 只有 `repository-records` 一个对象仓库；逻辑 kind 通过 ke
 | `MISSED_PATH_DELETE` | Side Panel → Worker | 单条删除并级联重逢历史 |
 | `DATA_DELETE_ALL` | Side Panel → Worker | 清空业务数据并保留 Settings/schema |
 
-消息信封包含 `schemaVersion`、`type`、`requestId` 和 `payload`。校验要求精确字段，未知版本、未知消息、额外字段和非法数值会被拒绝；响应会带回对应 `requestId`，并使用统一成功/错误结构。仍由旧页面脚本发出的 v1 消息会收到旧脚本可识别的 v1 `SCHEMA_VERSION_UNSUPPORTED` 错误，文案明确说明当前要求 v2 并提示刷新页面；未知版本收到当前 v2 错误信封。消息 payload 的字段和含义未改变。
+消息信封包含 `schemaVersion`、`type`、`requestId` 和 `payload`。校验要求精确字段，未知版本、未知消息、额外字段和非法数值会被拒绝；响应会带回对应 `requestId`，并使用统一成功/错误结构。
 
 ## 合并与幂等不变量
 
@@ -70,7 +62,6 @@ IndexedDB 只有 `repository-records` 一个对象仓库；逻辑 kind 通过 ke
 - finalize 将 marker、Chosen、Missed Path 和活动 Context 清理放进一次 commit；重复请求返回持久化结果。
 - 单条删除 Missed Path 时，在一次 commit 中同步删除引用它的 Re-encounter 记录。
 - `DATA_DELETE_ALL` 清空所有业务 kind，随后重写 schema 元数据并恢复原 Settings。
-- v1→v2 迁移只改 Repository 信封版本，不改领域 data；Settings、Session、Chosen、MissedPath、Reencounter 及其反馈保持原值。
 
 ## 启发式参数
 
@@ -107,3 +98,4 @@ Context 相似度是搜索词/关键词集合的 Jaccard 相似度；新鲜度�
 持久化的是搜索词、候选标题/URL、来源/排名、聚合计数、分数/原因和反馈；不持久化 DOM Element、完整正文、键盘/表单、Cookie/Token、截图或逐点鼠标轨迹。
 
 当前 P0 没有自动过期清理策略。用户通过 Side Panel 暂停、单条删除或清空业务数据；完全清除 Settings 等扩展状态需要浏览器级移除扩展或清理扩展存储。
+
