@@ -1,0 +1,222 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "a-lead",
+  "model": "next/qwen3.5-plus",
+  "small_model": "next/deepseek-v4-flash",
+  "enabled_providers": ["next", "next-claude"],
+  "share": "disabled",
+  "autoupdate": "notify",
+  "subagent_depth": 1,
+  "compaction": {"auto": true, "prune": true, "reserved": 12000},
+  "watcher": {
+    "ignore": ["node_modules/**", "dist/**", "build/**", ".git/**", "qa_*/**", ".docx-build/**", ".task-docx-build/**"]
+  },
+  "permission": {
+    "edit": "ask",
+    "bash": "ask",
+    "task": "ask",
+    "external_directory": "deny",
+    "doom_loop": "ask"
+  },
+  "provider": {
+    "next": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OpenAI Next - Routine",
+      "options": {
+        "baseURL": "https://api.openai-next.com/v1",
+        "apiKey": "{env:OPENAI_NEXT_API_KEY}"
+      },
+      "models": {
+        "qwen3.5-plus": {"name": "Qwen 3.5 Plus"},
+        "qwen3-coder-plus": {"name": "Qwen 3 Coder Plus"},
+        "deepseek-v4-flash": {"name": "DeepSeek V4 Flash"},
+        "gemini-3.7-flash": {"name": "Gemini 3.7 Flash"},
+        "gpt-5.6-terra": {"name": "GPT-5.6 Terra"}
+      },
+    },
+    "next-claude": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "OpenAI Next - Claude Native",
+      "options": {
+        "baseURL": "https://api.openai-next.com/v1",
+        "apiKey": "{env:OPENAI_NEXT_API_KEY}"
+      },
+      "models": {
+        "claude-sonnet-5": {"name": "Claude Sonnet 5"},
+        "claude-opus-5": {"name": "Claude Opus 5"}
+      }
+    }
+  },
+  "agent": {
+    "build": {
+      "description": "Implementation agent for general development, integration, debugging and testing.",
+      "mode": "primary",
+      "model": "next-claude/claude-sonnet-5",
+      "temperature": 0.2,
+      "steps": 16,
+      "color": "success",
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "*": "ask",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "npm run build*": "allow",
+          "npm run test*": "allow",
+          "npm run lint*": "allow"
+        },
+        "task": {
+          "*": "deny",
+          "explore": "allow",
+          "visual-review": "allow",
+          "code-check": "allow"
+        }
+      },
+      "prompt": "Implement, integrate, debug and test The Unclicked（余路） with the smallest reliable change. Inspect the repository before editing, preserve existing architecture, keep mock data clearly labeled, do not overstate completion, and prioritize a stable demo over speculative features. Coordinate with the A-line experience but do not rewrite product scope without confirmation."
+    },
+    "plan": {
+      "description": "Read-only planning agent for implementation plans, dependency analysis and task sequencing.",
+      "mode": "primary",
+      "model": "next/gpt-5.6-terra",
+      "temperature": 0.1,
+      "steps": 10,
+      "color": "info",
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "task": {
+          "*": "deny",
+          "explore": "allow",
+          "code-check": "ask"
+        }
+      },
+      "prompt": "Plan work for The Unclicked（余路） from repository evidence. Produce a small ordered plan with dependencies, owners, acceptance checks and risks. Respect the two-person beginner team, the competition deadline and the local explainable MVP. Do not modify files, invent progress or expand scope without replacing a weaker task."
+    },
+    "expert": {
+      "description": "Very expensive read-only expert for the hardest cross-module failures and high-stakes final decisions.",
+      "mode": "primary",
+      "model": "next-claude/claude-opus-5",
+      "temperature": 0.1,
+      "steps": 6,
+      "color": "error",
+      "permission": {
+        "edit": "ask",
+        "bash": "ask",
+        "task": "deny"
+      },
+      "prompt": "Act as the highest-cost senior expert for The Unclicked（余路）. Use only for difficult problems that cheaper agents could not settle: cross-module diagnosis, major architectural tradeoffs, irreducible demo failures, or final high-stakes review. Reconstruct conclusions from evidence, identify the smallest reliable action, and state uncertainty. You may edit files and run commands after receiving user approval. Keep changes minimal, verify them proportionally, and do not encourage unnecessary complexity."
+    },
+    "a-lead": {
+      "description": "Default A-line owner for product experience, UI direction, user validation, competition materials and project coordination.",
+      "mode": "primary",
+      "model": "next/qwen3.5-plus",
+      "temperature": 0.25,
+      "steps": 12,
+      "color": "primary",
+      "permission": {
+        "edit": "allow",
+        "bash": "ask",
+        "task": {
+          "*": "deny",
+          "explore": "allow",
+          "materials": "allow",
+          "visual-review": "allow",
+          "code-check": "allow",
+          "judge-review": "ask"
+        }
+      },
+      "prompt": "You are the A-line owner of The Unclicked（余路） for DUT Hackathon S2. The main track is OpenAtom「制造一点意外」 and the secondary track is MiraclePlus「为现实打个补丁」. The product is a browser extension that helps users rediscover content they seriously considered but did not choose. Focus on product experience, UI, static and interactive prototypes, user validation, README, screenshots, demo scripts, video storyboards and submission materials. This is a two-person beginner team with a hard deadline. Preserve a small local and explainable MVP. Do not introduce an LLM, cloud backend or complex feature unless it directly improves the verified demo. Never claim that mock data, unfinished integrations or untested behavior are complete. Inspect existing files before editing, avoid changing B-line core logic without confirmation, and prioritize a stable demonstrable loop over feature count."
+    },
+    "prototype": {
+      "description": "Premium implementation agent for polished UI, browser-extension interaction and difficult frontend debugging.",
+      "mode": "primary",
+      "model": "next-claude/claude-sonnet-5",
+      "temperature": 0.2,
+      "steps": 16,
+      "color": "success",
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "*": "ask",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "npm run build*": "allow",
+          "npm run test*": "allow",
+          "npm run lint*": "allow"
+        },
+        "task": {
+          "*": "deny",
+          "explore": "allow",
+          "visual-review": "allow",
+          "code-check": "allow"
+        }
+      },
+      "prompt": "Implement the smallest polished and reliable A-line experience for The Unclicked（余路）. Focus on side-panel UI, interaction states, feedback actions, demo reliability, accessibility and clear visual hierarchy. Reuse the existing stack and inspect the repository before changing anything. Keep mock data clearly labeled. Do not rewrite B-line data collection or scoring logic unless explicitly requested. Run only relevant checks and stop before adding speculative architecture or nonessential features."
+    },
+    "strategy": {
+      "description": "Premium read-only consultant for major product decisions, track fit, MVP cuts and presentation strategy.",
+      "mode": "primary",
+      "model": "next/gpt-5.6-terra",
+      "temperature": 0.1,
+      "steps": 8,
+      "color": "warning",
+      "permission": {"edit": "deny", "bash": "deny", "task": "deny"},
+      "prompt": "Act as a senior hackathon product strategist for The Unclicked（余路）. Reconstruct the situation from evidence. Evaluate track fit, user value, differentiation from bookmarks and recommendation systems, MVP scope, demo clarity, privacy, claim accuracy and judging risks. Return a prioritized decision with the smallest reliable next actions. Do not modify files and do not reward unnecessary complexity."
+    },
+    "materials": {
+      "description": "Writes and improves README, project descriptions, validation notes, demo scripts and submission materials.",
+      "mode": "subagent",
+      "model": "next/qwen3.5-plus",
+      "temperature": 0.35,
+      "steps": 8,
+      "permission": {"edit": "ask", "bash": "deny", "task": "deny"},
+      "prompt": "Prepare concise and truthful competition materials for The Unclicked（余路）. Keep the main-track narrative prominent, distinguish the product from bookmarks and ordinary recommendation, and clearly separate verified functionality from mockups or planned work. Prefer concrete user flows and demonstrated evidence over slogans. Never invent user research, metrics, implementation status or technical capabilities."
+    },
+    "explore": {
+      "description": "Fast low-cost read-only exploration of files, existing implementation and project evidence.",
+      "mode": "subagent",
+      "model": "next/deepseek-v4-flash",
+      "temperature": 0.1,
+      "steps": 6,
+      "permission": {"edit": "deny", "bash": "deny", "task": "deny"},
+      "prompt": "Explore the project read-only. Locate relevant files, reconstruct the current implementation and report evidence with exact paths. Distinguish implemented, mocked, documented and missing behavior. Do not propose large redesigns and do not modify files."
+    },
+    "visual-review": {
+      "description": "Reviews screenshots and UI states for clarity, hierarchy, consistency and demo readiness.",
+      "mode": "subagent",
+      "model": "next/gemini-3.7-flash",
+      "temperature": 0.2,
+      "steps": 6,
+      "permission": {"edit": "deny", "bash": "deny", "task": "deny"},
+      "prompt": "Review The Unclicked UI and screenshots from the perspective of a first-time user and a hackathon judge. Check whether the core story is understandable within seconds, mock data is labeled, actions and state changes are visible, typography and spacing are coherent, and the demo path is easy to follow. Prioritize confirmed visual problems and give small actionable fixes. Do not modify files."
+    },
+    "code-check": {
+      "description": "Read-only technical check of frontend and extension changes before demos.",
+      "mode": "subagent",
+      "model": "next/qwen3-coder-plus",
+      "temperature": 0.1,
+      "steps": 8,
+      "permission": {
+        "edit": "deny",
+        "bash": {"*": "deny", "git status*": "allow", "git diff*": "allow"},
+        "task": "deny"
+      },
+      "prompt": "Review the current changes without modifying files. Focus on demo-breaking bugs, extension state inconsistencies, event handling, local-storage behavior, error handling, privacy leaks, hard-coded assumptions and mismatches between visible UI claims and implemented behavior. Separate confirmed bugs from risks and suggestions."
+    },
+    "judge-review": {
+      "description": "Premium final-stage judge simulation for project coherence, evidence and submission readiness.",
+      "mode": "subagent",
+      "model": "next/gpt-5.6-terra",
+      "temperature": 0.1,
+      "steps": 6,
+      "permission": {"edit": "deny", "bash": "deny", "task": "deny"},
+      "prompt": "Act as a strict DUT Hackathon S2 judge. Review The Unclicked as a complete submission: problem, target user, track fit, novelty, working evidence, demo clarity, technical truthfulness and presentation. Identify the few issues most likely to reduce the score or block advancement. Do not modify files and do not suggest scope expansion unless it replaces a weaker element."
+    },
+    "compaction": {
+      "model": "next/deepseek-v4-flash",
+      "temperature": 0.1
+    },
+    "title": {"model": "next/deepseek-v4-flash"},
+    "summary": {"model": "next/deepseek-v4-flash"}
+  }
+}

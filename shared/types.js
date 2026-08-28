@@ -1,5 +1,13 @@
 // @ts-check
 
+import {
+  TAG_LIMITS,
+  isCanonicalNativeTag,
+  isNormalizedTag,
+  normalizeNativeTags,
+  normalizeTag
+} from "./tags.js";
+
 /** The single version source for messages and Repository envelopes. */
 export const SCHEMA_VERSION = 2;
 
@@ -103,6 +111,24 @@ export const DEFAULT_SETTINGS_V1 = Object.freeze({
  * @property {string} source
  * @property {number} timestamp
  * @property {string[]} [keywords]
+ */
+
+/**
+ * Local, site-independent tags extracted from one search Context.
+ *
+ * @typedef {object} ContextTagProfileV1
+ * @property {string} sessionId
+ * @property {readonly string[]} normalizedTags
+ */
+
+/**
+ * Candidate tags with platform labels kept separate from normalized tags.
+ *
+ * @typedef {object} CandidateTagProfileV1
+ * @property {string} candidateId
+ * @property {string} sessionId
+ * @property {readonly string[]} nativeTags
+ * @property {readonly string[]} normalizedTags
  */
 
 /**
@@ -265,6 +291,16 @@ const SESSION_OWNER_KEYS = Object.freeze([
   "frameId",
   "sessionId"
 ]);
+const CONTEXT_TAG_PROFILE_KEYS = Object.freeze([
+  "sessionId",
+  "normalizedTags"
+]);
+const CANDIDATE_TAG_PROFILE_KEYS = Object.freeze([
+  "candidateId",
+  "sessionId",
+  "nativeTags",
+  "normalizedTags"
+]);
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -308,6 +344,31 @@ function isConstantValue(constants, value) {
 
 function isNonNegativeInteger(value) {
   return Number.isInteger(value) && value >= 0;
+}
+
+function isNormalizedTagList(value) {
+  return (
+    Array.isArray(value) &&
+    value.length <= TAG_LIMITS.maxTags &&
+    value.every(isNormalizedTag) &&
+    value.every((tag, index) => index === 0 || value[index - 1] < tag)
+  );
+}
+
+function isNativeTagList(value) {
+  if (
+    !Array.isArray(value) ||
+    value.length > TAG_LIMITS.maxNativeTags ||
+    !value.every(isCanonicalNativeTag)
+  ) {
+    return false;
+  }
+
+  const canonical = normalizeNativeTags(value);
+  return (
+    canonical.length === value.length &&
+    canonical.every((tag, index) => tag === value[index])
+  );
 }
 
 /**
@@ -372,6 +433,40 @@ export function isSearchContextV1(value) {
         (Array.isArray(value.keywords) &&
           value.keywords.every(isNonEmptyString)))
   );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is ContextTagProfileV1}
+ */
+export function isContextTagProfileV1(value) {
+  return Boolean(
+    hasExactKeys(value, CONTEXT_TAG_PROFILE_KEYS) &&
+      isNonEmptyString(value.sessionId) &&
+      isNormalizedTagList(value.normalizedTags)
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is CandidateTagProfileV1}
+ */
+export function isCandidateTagProfileV1(value) {
+  if (
+    !hasExactKeys(value, CANDIDATE_TAG_PROFILE_KEYS) ||
+    !isNonEmptyString(value.candidateId) ||
+    !isNonEmptyString(value.sessionId) ||
+    !isNativeTagList(value.nativeTags) ||
+    !isNormalizedTagList(value.normalizedTags)
+  ) {
+    return false;
+  }
+
+  const normalizedTagSet = new Set(value.normalizedTags);
+  return value.nativeTags.every((nativeTag) => {
+    const normalizedTag = normalizeTag(nativeTag);
+    return normalizedTag !== null && normalizedTagSet.has(normalizedTag);
+  });
 }
 
 /**
