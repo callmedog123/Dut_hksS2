@@ -215,7 +215,7 @@ Bilibili / Zhihu / Douyin Search Page
 | 13 | 知乎 Adapter 与 Runtime | P2 | 6、8、12 | COMPLETED |
 | 14 | 知乎原生标签增强 | P2 | 13 | COMPLETED（按安全边界审计后采用本地 fallback；无原生 Provider） |
 | 15 | 抖音 Adapter 与 Runtime | P2 | 6、8、12 | COMPLETED（自动验证；真实 Chrome PENDING） |
-| 16 | 抖音原生标签增强 | P2 | 15 | PENDING |
+| 16 | 抖音原生标签增强 | P2 | 15 | COMPLETED（DOM hashtag + 本地 fallback；无网络 Provider） |
 | 17 | 三平台最终集成与发布验收 | P0 | 9、12、14、16 | PENDING |
 
 任务 13 和 15 在基础设施完成后可以分别开发，但同一工作树中仍应一次只执行一个，避免共享 Registry、Manifest 和 Runtime 冲突。
@@ -1374,6 +1374,31 @@ URL、content-script match 和 host permission。
 需要新增权限时先停止并请求精确批准。不修改评分、Repository 结构或其他
 Adapter。
 ```
+
+#### 任务 16 完成记录（2026-08-29）
+
+- 只读核查确认公开抖音搜索结果的卡片文本已经展示 `#hashtag`；任务 15 的 Douyin
+  Adapter 已限定在受支持的 VIDEO/IMAGE_POST 卡片内读取这些肉眼可见文本，因此当前
+  DOM 来源足够，不需要再访问详情页或平台接口；
+- 原生标签继续通过 `extractCandidateTags()` → Site Runtime →
+  `CANDIDATE_TAGS_DISCOVERED` → Background → CandidateTagProfile 的严格 DTO 闭环，
+  不进入 Candidate、评分或 Side Panel 自计算路径；
+- 新增真实 Douyin Adapter/Runtime → Message Router → Repository 集成测试：有 hashtag
+  时持久化规范化原生标签，后续信号达到富化门槛后仍复用既有 nativeTags，不被本地
+  fallback 覆盖；无 hashtag 时不发送空原生标签消息，由共享 Coordinator 写入标题/
+  搜索词 `LOCAL_FALLBACK`；
+- 生产 TagProvider 保持 `null`；没有 fetch/XHR、WBI/签名逆向、模拟客户端、Cookie、
+  Token、登录态或新权限。缓存、并发去重、退避、会话预算和删除级联仍复用任务 8，
+  本任务不改评分、Repository 结构、Side Panel 或其他 Adapter；
+- `node --test` 与 `npm test` 均为 492/492 通过；`npm run typecheck` 检查 107 个
+  JavaScript 文件通过；`npm run build` 的 build/release validation 通过；
+  `git diff --check` 通过；
+- 真实 Chrome 中 hashtag 节点、登录/反爬状态和 IndexedDB 结果仍须按人工检查表验证。
+
+**任务 16 状态**：COMPLETED（DOM hashtag 与本地 fallback 闭环、自动验证和文档）；
+真实 Chrome 手动验收：PENDING。
+
+**下一步**：任务 17（三平台最终集成与发布只读验收）；任务 17 不得修改文件。
 
 ### 任务 17：最终三平台集成与发布验收
 

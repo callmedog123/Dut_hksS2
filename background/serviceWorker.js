@@ -107,7 +107,9 @@ function getTagEnrichmentCoordinator() {
     // require either whole-page access or authenticated/credentialed data,
     // which is outside the frozen privacy boundary. Keep the production
     // provider null so Task 8 persists title/query fallback profiles without
-    // adding network access, permissions or login-state coupling.
+    // adding network access, permissions or login-state coupling. Douyin's
+    // visible card hashtags arrive through CANDIDATE_TAGS_DISCOVERED instead;
+    // Task 16 therefore needs no network provider either.
     tagEnrichmentCoordinator = createTagEnrichmentCoordinator(
       getRepository(),
       null

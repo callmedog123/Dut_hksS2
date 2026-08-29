@@ -96,7 +96,7 @@ Adapter 依据当前页面的语义 `data-za-detail-view-path-module` 边界定�
 
 抖音入口只匹配 `https://www.douyin.com/search/*`；Adapter 进一步要求 HTTPS、精确 `www.douyin.com`、路径中含非空搜索词，且搜索类型为综合或视频。当前只识别带稳定 aweme ID 的普通视频和图文作品，生成 `douyin:video:` 或 `douyin:image_post:` 命名空间 ID，并标记 `VIDEO`/`IMAGE_POST` 与 `GRID`。用户、话题、直播、商品、广告、无稳定 ID、空标题及无法确定内容类型的卡片均不会进入 Candidate。
 
-抖音搜索卡片中肉眼可见的 hashtag 通过独立 `CandidateNativeTagsV1` 消息上报，不会塞进 Candidate 或读取正文；没有 hashtag 时仍使用标题和搜索词的本地 fallback。Runtime 复用通用 Site Runtime 的采集与生命周期编排，不读取 Cookie、Token、评论、用户资料、视频内容或图文正文，也不调用抖音接口。真实页面结构变化仍可能使 Adapter 失效，必须以人工检查表为准。
+抖音搜索卡片中肉眼可见的 hashtag 通过独立 `CandidateNativeTagsV1` 消息上报，不会塞进 Candidate 或读取正文；没有 hashtag 时仍使用标题和搜索词的本地 fallback。任务 16 的只读核查确认当前公开搜索结果文本已包含可用 hashtag，因此生产 Provider 保持 `null`，不新增网络来源。Runtime 复用通用 Site Runtime 的采集与生命周期编排，不读取 Cookie、Token、评论、用户资料、视频内容或图文正文，也不调用抖音接口。真实页面结构变化仍可能使 Adapter 失效，必须以人工检查表为准。
 
 ## 权限说明
 
