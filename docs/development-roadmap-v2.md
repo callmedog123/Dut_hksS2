@@ -214,9 +214,9 @@ Bilibili / Zhihu / Douyin Search Page
 | 12 | 跨平台 Re-encounter v2 | P1 | 11 | COMPLETED |
 | 13 | 知乎 Adapter 与 Runtime | P2 | 6、8、12 | COMPLETED |
 | 14 | 知乎原生标签增强 | P2 | 13 | COMPLETED（按安全边界审计后采用本地 fallback；无原生 Provider） |
-| 15 | 抖音 Adapter 与 Runtime | P2 | 6、8、12 | COMPLETED（自动验证；真实 Chrome PENDING） |
+| 15 | 抖音 Adapter 与 Runtime | P2 | 6、8、12 | COMPLETED（自动验证与真实 Chrome 人工验收） |
 | 16 | 抖音原生标签增强 | P2 | 15 | COMPLETED（DOM hashtag + 本地 fallback；无网络 Provider） |
-| 17 | 三平台最终集成与发布验收 | P0 | 9、12、14、16 | PENDING |
+| 17 | 三平台最终集成与发布验收 | P0 | 9、12、14、16 | COMPLETED（自动验证与用户确认的真实 Chrome 人工验收） |
 
 任务 13 和 15 在基础设施完成后可以分别开发，但同一工作树中仍应一次只执行一个，避免共享 Registry、Manifest 和 Runtime 冲突。
 
@@ -1251,11 +1251,11 @@ URL、content-script match 和 host permission。
 - 自动验证：全仓 `node --test` / `npm test` 466/466 通过，`npm run typecheck`
   检查 101 个 JavaScript 文件通过，`npm run build` 的 build/release validation 通过，
   `git diff --check` 通过；
-- 真实 Chrome unpacked extension 手动验收尚未执行。内置浏览器的已登录页面审计只证明
-  当前 DOM 与交互事实，不替代扩展 Content Script、点击采集、多 tab owner 与恢复流程的
-  Chrome 手动验证。
+- 截至任务实现完成时，真实 Chrome unpacked extension 手动验收尚未执行；该项已在后续
+  最终人工验收中完成。内置浏览器的已登录页面审计只证明当时的 DOM 与交互事实，不替代
+  后续真实 Chrome 验收结果。
 
-**任务 13 状态**：COMPLETED（实现、自动测试与文档）；真实 Chrome 手动验收：PENDING。
+**任务 13 状态**：COMPLETED（实现、自动测试、文档与真实 Chrome 手动验收）。
 
 **下一步**：任务 14（知乎原生标签增强）；本任务完成后不得自动开始。
 
@@ -1349,10 +1349,11 @@ URL、content-script match 和 host permission。
 - `node --test` 与 `npm test` 均为 490/490 通过；`npm run typecheck` 检查 107 个
   JavaScript 文件通过；`npm run build` 的 build/release validation 通过；
   `git diff --check` 通过；
-- 真实 Chrome 的登录/反爬状态、当前 DOM、动态加载、点击、SPA、cleanup 和 hashtag 仍须
-  按人工检查表验证，自动 fixture 不替代浏览器事实。
+- 截至任务实现完成时，真实 Chrome 的登录/反爬状态、当前 DOM、动态加载、点击、SPA、
+  cleanup 和 hashtag 尚待人工检查；该项已在后续最终人工验收中完成，自动 fixture 不作为
+  浏览器事实。
 
-**任务 15 状态**：COMPLETED（实现、自动验证与文档）；真实 Chrome 手动验收：PENDING。
+**任务 15 状态**：COMPLETED（实现、自动验证、文档与真实 Chrome 手动验收）。
 
 **下一步**：任务 16（抖音原生标签增强）；本任务完成后不得自动开始。
 
@@ -1393,10 +1394,11 @@ Adapter。
 - `node --test` 与 `npm test` 均为 492/492 通过；`npm run typecheck` 检查 107 个
   JavaScript 文件通过；`npm run build` 的 build/release validation 通过；
   `git diff --check` 通过；
-- 真实 Chrome 中 hashtag 节点、登录/反爬状态和 IndexedDB 结果仍须按人工检查表验证。
+- 截至任务实现完成时，真实 Chrome 中 hashtag 节点、登录/反爬状态和 IndexedDB 结果尚待
+  人工检查；该项已在后续最终人工验收中完成。
 
-**任务 16 状态**：COMPLETED（DOM hashtag 与本地 fallback 闭环、自动验证和文档）；
-真实 Chrome 手动验收：PENDING。
+**任务 16 状态**：COMPLETED（DOM hashtag 与本地 fallback 闭环、自动验证、文档与
+真实 Chrome 手动验收）。
 
 ### 步骤 10：三平台集成回归、手动验收与材料同步（2026-08-29）
 
@@ -1428,7 +1430,9 @@ npm run build       → build/release validation 通过
 git diff --check    → 通过（仅 LF/CRLF 提示）
 ```
 
-**真实 Chrome 验收**：本步骤未执行，也无法由自动化代理执行。三平台真实浏览器验收（初始/动态/SPA/去重/cleanup、普通/Ctrl/Cmd/中键点击、两 tab、Worker 强退恢复、暂停/单删/清空、标签来源/fallback、跨平台重逢）仍是 **PENDING**，需要用户按 `docs/manual-browser-checklist.md` 执行。
+**真实 Chrome 验收**：本自动化步骤执行时未运行；随后已由用户按照
+`docs/manual-browser-checklist.md` 完成人工验收。该结果与自动测试分开记录，未将 fixture、
+mock 或静态原型计作真实浏览器验证。
 
 **比赛材料检查**：README、data-contract、architecture、permissions-and-privacy 已同步反映"Bilibili/Zhihu 无原生标签、Douyin 用 DOM hashtag"的真实范围，未发现声称未实现能力的表述。
 
@@ -1493,8 +1497,19 @@ clicked 排除、标签 fallback、跨平台重逢、最多三条、冷却、负
 
 自动验证：`node --test` 与 `npm test` 均为 496/496 通过（7 suites、0 失败）；
 `npm run typecheck` 检查 107 个 JavaScript 文件通过；`npm run build` 的 build/release
-validation 通过；`git diff --check` 通过。真实 Chrome 三站、多标签、强退恢复和
-当前版本视频仍须人工完成，不能由上述自动测试替代。
+validation 通过；`git diff --check` 通过。上述自动结果不替代真实浏览器验证；真实 Chrome
+验收已由用户另行完成并确认。
+
+#### 最终真实 Chrome 人工验收记录（2026-08-29）
+
+- 用户确认已完成 `docs/manual-browser-checklist.md` 所要求的最终人工验收；
+- Bilibili、知乎、抖音的真实页面行为已作为人工结果验收，不以自动 fixture 或 mock 代替；
+- 多标签页、当前标签页 Side Panel、会话结算、恢复、暂停、删除、清空和重逢流程均纳入
+  本轮最终验收范围；
+- 用户未报告阻塞提交的浏览器问题；任务 13、15、16 的人工验收状态及任务 17 状态据此更新为
+  `COMPLETED`；
+- 启发式评分尚未经过 5～10 人效果校准、平台 DOM 未来可能变化等仍属于已披露限制，不因本次
+  功能验收而改写为已验证的长期效果。
 
 ## 12. 每项任务完成报告模板
 
