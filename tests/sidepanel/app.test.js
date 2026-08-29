@@ -468,7 +468,10 @@ test("waits for SETTINGS_UPDATE acknowledgement for pause and resume", () => {
       updated: true
     })
   );
-  assert.equal(status.textContent, "采集已恢复。");
+  assert.equal(
+    status.textContent,
+    "采集设置已恢复；已打开的搜索页会在页面更新或刷新后继续采集。"
+  );
   assert.equal(resumeButton.disabled, false);
 });
 
@@ -701,6 +704,7 @@ test("ViewModel localizes persisted English consideration reason labels", () => 
         { code: "LONG_HOVER", label: "legacy English label" },
         { code: "RETURN_VIEW", label: "legacy English label" },
         { code: "REPEATED_HOVER", label: "legacy English label" },
+        { code: "SELECTED_TAG_SIMILARITY", label: "legacy English label" },
         { code: "NOT_CLICKED", label: "legacy English label" }
       ]
     })
@@ -711,6 +715,7 @@ test("ViewModel localizes persisted English consideration reason labels", () => 
     "较长的累计悬停时间表明你曾认真考虑该结果。",
     "再次回看表明你曾认真考虑该结果。",
     "多次悬停表明你曾反复考虑该结果。",
+    "该结果与你已选择内容的标签相似。",
     "你在本次搜索中最终没有选择该结果。"
   ]);
 });

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { createSessionManager } from "../../background/sessionManager.js";
 import { CONSIDERATION_SCORING_CONFIG } from "../../background/scoringConfig.js";
+import { createTagEnrichmentCoordinator } from "../../background/tagEnrichment.js";
 import { SESSION_LIFECYCLE_STATUSES } from "../../shared/types.js";
 import { createRepository } from "../../storage/repository.js";
 import { createTransactionalMemoryStorageAdapter } from "../storage/fixtures/memoryStorageAdapter.js";
@@ -116,6 +117,49 @@ test("only unclicked Candidates at or above the threshold become MissedPath", as
     true
   );
   assert.deepEqual(await repository.listMissedPaths(), result.missedPaths);
+});
+
+test("uses strict Repository CandidateTagProfile data for selected-tag scoring", async () => {
+  const { repository, manager } = await setup(
+    createSession([
+      entry("selected", 1),
+      entry("tag-assisted", 2, {
+        visibleMs: 10_000,
+        hoverMs: 1_500
+      })
+    ])
+  );
+  await repository.saveCandidateTagProfile({
+    candidateId: "selected",
+    sessionId: "session-1",
+    nativeTags: [],
+    normalizedTags: ["robot"]
+  });
+  await repository.saveCandidateTagProfile({
+    candidateId: "tag-assisted",
+    sessionId: "session-1",
+    nativeTags: [],
+    normalizedTags: ["robot"]
+  });
+  await manager.recordCandidateChosen("session-1", "selected", 450);
+  await createTagEnrichmentCoordinator(
+    repository,
+    null
+  ).refreshSelectedTagProfile("session-1");
+
+  const result = await manager.finalizeSession("session-1", 500);
+
+  assert.equal(result.chosen.length, 1);
+  assert.equal(result.chosen[0].candidate.id, "selected");
+  assert.equal(result.missedPaths.length, 1);
+  assert.equal(result.missedPaths[0].candidate.id, "tag-assisted");
+  assert.equal(result.missedPaths[0].score, 0.6);
+  assert.equal(
+    result.missedPaths[0].reasons.some(
+      (reason) => reason.code === "SELECTED_TAG_SIMILARITY"
+    ),
+    true
+  );
 });
 
 test("repeated finalize is idempotent and does not create duplicates", async () => {

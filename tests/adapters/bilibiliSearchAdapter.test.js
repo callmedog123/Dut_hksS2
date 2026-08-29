@@ -42,7 +42,9 @@ test("extracts minimal normalized Candidates with stable video IDs and DOM rank"
       title: "Robot Navigation Basics",
       source: "bilibili-search",
       rank: 1,
-      sessionId: "bilibili-session-001"
+      sessionId: "bilibili-session-001",
+      contentType: "VIDEO",
+      layoutType: "GRID"
     },
     {
       id: "BV1VisualNav2",
@@ -50,7 +52,9 @@ test("extracts minimal normalized Candidates with stable video IDs and DOM rank"
       title: "Visual Navigation",
       source: "bilibili-search",
       rank: 2,
-      sessionId: "bilibili-session-001"
+      sessionId: "bilibili-session-001",
+      contentType: "VIDEO",
+      layoutType: "GRID"
     }
   ]);
 });
@@ -130,7 +134,9 @@ test("skips ads, non-video or bad links, empty titles, selector failures, and du
       title: "Valid result",
       source: "bilibili-search",
       rank: 6,
-      sessionId: "bilibili-session-001"
+      sessionId: "bilibili-session-001",
+      contentType: "VIDEO",
+      layoutType: "GRID"
     }
   ]);
 });

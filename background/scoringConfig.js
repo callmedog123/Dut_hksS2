@@ -46,6 +46,15 @@ export const CONSIDERATION_SCORING_CONFIG = Object.freeze({
       })
     }),
     [PLATFORMS.DOUYIN]: Object.freeze({
+      // The current Douyin search Adapter observes the waterfall/grid page.
+      // Retain VIDEO_FEED with the same frozen caps for legacy records and a
+      // possible future feed-style Adapter.
+      [LAYOUT_TYPES.GRID]: Object.freeze({
+        exposureMs: 8_000,
+        hoverMs: 2_000,
+        returnCount: 2,
+        repeatedHoverCount: 3
+      }),
       [LAYOUT_TYPES.VIDEO_FEED]: Object.freeze({
         exposureMs: 8_000,
         hoverMs: 2_000,

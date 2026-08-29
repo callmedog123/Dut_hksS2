@@ -100,6 +100,8 @@ payload = { sessionId, tags: [{candidateId, nativeTags}, ...], discoveredAt }
 
 `SessionSelectedTagProfileV1` 由 Session 内全部已点击候选聚合而成，字段为 `sessionId`、`selectedCandidateCount` 和按 `candidateCount` 降序、同频次按标签升序排列的 `tags`；每项含 `tag`、`candidateCount` 和 `weight`（= `candidateCount / selectedCandidateCount`）。没有已点击候选时，profile 明确为 `selectedCandidateCount: 0` 且 `tags` 为空，而不是缺失记录。
 
+Consideration v2 结算时，`SessionManager` 分别读取合法的 `CandidateV1`、对应的 `CandidateTagProfileV1` 和 `SessionSelectedTagProfileV1`。标签相似度只比较 `CandidateTagProfileV1.normalizedTags` 与已选标签画像；不得把 `normalizedTags` 临时附加到 `CandidateV1`，因为严格 Candidate 校验会拒绝额外字段。缺少候选标签 Profile 时标签加分明确为 0，不阻塞结算。
+
 三个标签 kind 均按 Session Owner 隔离，记录 ID 复用 `createSessionOwnerKey`，`tag-candidate` 再附加经 `encodeURIComponent` 编码的 `candidateId`。因此同一搜索词在两个标签页、或同一标签页的新旧 document 之间不会共享标签数据。本次未提升 `SCHEMA_VERSION`，也没有数据迁移。
 
 富化资格门槛集中在 `background/tagEnrichment.js` 的 `TAG_ENRICHMENT_CONFIG`，与考虑度阈值相互独立：
@@ -168,6 +170,7 @@ IndexedDB 只有 `repository-records` 一个对象仓库；逻辑 kind 通过 ke
 - URL 只接受 HTTP(S)，去掉 fragment 和常见跟踪参数，并稳定排序查询参数。
 - `visibleMs`、`hoverMs`、`hoverCount`、`returnCount` 只能单调增加；迟到快照取字段最大值。
 - `clicked` 只能从 `false` 变为 `true`。
+- `SELECTED_TAG_SIMILARITY` 是合法的持久化 Consideration reason code；它只在严格 TagProfile 确有交集时出现。
 - 已 finalize 的 Session 不再接受 Candidate 或信号更新。
 - finalize 将 marker、Chosen、Missed Path 和活动 Context 清理放进一次 commit；重复请求返回持久化结果。
 - 单条删除 Missed Path 时，在一次 commit 中同步删除引用它的 Re-encounter 记录。

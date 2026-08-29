@@ -102,11 +102,12 @@ function jaccardSimilarity(tagsA, tagsB) {
  * or model dependency.
  *
  * @param {import("../shared/types.js").CandidateSignalsV1} signals
- * @param {{candidate?: import("../shared/types.js").CandidateV1, sessionSelectedTagProfile?: import("../shared/types.js").SessionSelectedTagProfileV1}} [context]
+ * @param {{candidate?: import("../shared/types.js").CandidateV1, candidateTagProfile?: import("../shared/types.js").CandidateTagProfileV1, sessionSelectedTagProfile?: import("../shared/types.js").SessionSelectedTagProfileV1}} [context]
  * @returns {ConsiderationResult}
  */
 export function calculateConsideration(signals, context) {
   const candidate = context?.candidate ?? null;
+  const candidateTagProfile = context?.candidateTagProfile ?? null;
   const sessionSelectedTagProfile = context?.sessionSelectedTagProfile ?? null;
 
   const normalized = normalizeConsiderationSignals(signals, candidate);
@@ -167,9 +168,7 @@ export function calculateConsideration(signals, context) {
     Array.isArray(sessionSelectedTagProfile.tags) &&
     sessionSelectedTagProfile.tags.length > 0
   ) {
-    const candidateTags = candidate !== null && candidate !== undefined
-      ? (candidate.normalizedTags ?? [])
-      : [];
+    const candidateTags = candidateTagProfile?.normalizedTags ?? [];
     const selectedTags = sessionSelectedTagProfile.tags.map((entry) => entry.tag);
     selectedTagSimilarity = jaccardSimilarity(candidateTags, selectedTags);
   }

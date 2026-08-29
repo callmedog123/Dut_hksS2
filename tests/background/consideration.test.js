@@ -53,6 +53,15 @@ function createSessionSelectedTagProfile(tags, selectedCandidateCount) {
   };
 }
 
+function createCandidateTagProfile(tags) {
+  return {
+    candidateId: "candidate-1",
+    sessionId: "session-1",
+    nativeTags: [],
+    normalizedTags: tags
+  };
+}
+
 // =========== Configuration frozen values ===========
 
 test("v2 configuration has the approved behavior weights", () => {
@@ -86,6 +95,12 @@ test("v2 configuration has platform-specific normalization caps", () => {
     repeatedHoverCount: 4
   });
   assert.deepEqual(caps[PLATFORMS.DOUYIN][LAYOUT_TYPES.VIDEO_FEED], {
+    exposureMs: 8_000,
+    hoverMs: 2_000,
+    returnCount: 2,
+    repeatedHoverCount: 3
+  });
+  assert.deepEqual(caps[PLATFORMS.DOUYIN][LAYOUT_TYPES.GRID], {
     exposureMs: 8_000,
     hoverMs: 2_000,
     returnCount: 2,
@@ -126,6 +141,21 @@ test("getNormalizationCapsForCandidate returns DOUYIN/VIDEO_FEED caps for douyin
     source: "douyin-search",
     contentType: CONTENT_TYPES.VIDEO,
     layoutType: LAYOUT_TYPES.VIDEO_FEED
+  });
+  const caps = getNormalizationCapsForCandidate(candidate);
+  assert.deepEqual(caps, {
+    exposureMs: 8_000,
+    hoverMs: 2_000,
+    returnCount: 2,
+    repeatedHoverCount: 3
+  });
+});
+
+test("getNormalizationCapsForCandidate returns DOUYIN/GRID caps used by the search Adapter", () => {
+  const candidate = createCandidate({
+    source: "douyin-search",
+    contentType: CONTENT_TYPES.VIDEO,
+    layoutType: LAYOUT_TYPES.GRID
   });
   const caps = getNormalizationCapsForCandidate(candidate);
   assert.deepEqual(caps, {
@@ -182,6 +212,7 @@ test("behaviorScore < 0.35 永远返回 BELOW_THRESHOLD，即使标签相似度=
     signals,
     {
       candidate,
+      candidateTagProfile: createCandidateTagProfile(["test"]),
       sessionSelectedTagProfile
     }
   );
@@ -234,7 +265,8 @@ test("behaviorScore ≥ 0.35 且 totalScore ≥ 0.55 → QUALIFIES", () => {
   const result = calculateConsideration(
     signals,
     {
-      candidate: { ...candidate, normalizedTags: ["test"] },
+      candidate,
+      candidateTagProfile: createCandidateTagProfile(["test"]),
       sessionSelectedTagProfile
     }
   );
@@ -314,14 +346,11 @@ test("Jaccard 相似度=1 时 tagBonus=0.15", () => {
   const candidate = createCandidate();
   const sessionSelectedTagProfile = createSessionSelectedTagProfile(["test"]);
 
-  // Note: candidate.normalizedTags would come from the actual candidate object
-  // In real usage, this would be populated by the Repository.
-  // For this test, we're testing the formula logic, not the tag extraction.
-
   const result = calculateConsideration(
     signals,
     {
-      candidate: { ...candidate, normalizedTags: ["test"] },
+      candidate,
+      candidateTagProfile: createCandidateTagProfile(["test"]),
       sessionSelectedTagProfile
     }
   );
@@ -363,7 +392,8 @@ test("SELECTED_TAG_SIMILARITY reason 只在相似度>0 时出现", () => {
   const result2 = calculateConsideration(
     signals,
     {
-      candidate: { ...createCandidate(), normalizedTags: ["test"] },
+      candidate: createCandidate(),
+      candidateTagProfile: createCandidateTagProfile(["test"]),
       sessionSelectedTagProfile: createSessionSelectedTagProfile(["test"])
     }
   );
@@ -442,7 +472,8 @@ test("即使 selectedTagSimilarity=1，behaviorScore < 0.35 仍被拒绝", () =>
   const result = calculateConsideration(
     signals,
     {
-      candidate: { ...createCandidate(), normalizedTags: ["test"] },
+      candidate: createCandidate(),
+      candidateTagProfile: createCandidateTagProfile(["test"]),
       sessionSelectedTagProfile: createSessionSelectedTagProfile(["test"])
     }
   );

@@ -1291,6 +1291,67 @@ test("paused Settings survive Worker restart and block every collection write", 
   }
 });
 
+test("paused Settings prevent startup recovery from settling an existing Session", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+  const staleAt = Date.now() - SESSION_RECOVERY_CONFIG.recoveryWindowMs - 1_000;
+  const repository = createRepository(
+    createIndexedDbStorageAdapter({ indexedDB })
+  );
+  await repository.mergeDiscoveredCandidates(
+    {
+      sessionId: DEFAULT_OWNER.sessionId,
+      context: createContext(staleAt),
+      candidates: [createCandidate()],
+      discoveredAt: staleAt
+    },
+    DEFAULT_OWNER
+  );
+  await repository.mergeCandidateSignalsSnapshot(
+    {
+      signals: createSignals(false),
+      updatedAt: staleAt + 1
+    },
+    DEFAULT_OWNER
+  );
+  await repository.saveSettings({
+    enabled: false,
+    allowlist: [],
+    blocklist: [],
+    thresholds: { consideration: 0.55, reencounter: 0.6 },
+    demoMode: false
+  });
+
+  try {
+    const worker = await loadServiceWorker("paused-startup-recovery");
+    await worker.startupListener();
+    assert.equal(
+      (await repository.getSession(DEFAULT_OWNER.sessionId, DEFAULT_OWNER)).status,
+      SESSION_LIFECYCLE_STATUSES.OPEN
+    );
+    assert.deepEqual(await repository.listMissedPaths(), []);
+
+    const resumed = await dispatchAsync(
+      worker,
+      createSettingsUpdateMessage(
+        true,
+        Date.now(),
+        "request-resume-before-recovery"
+      )
+    );
+    assert.equal(resumed.data.settings.enabled, true);
+    await worker.startupListener();
+    assert.equal(
+      (await repository.getSession(DEFAULT_OWNER.sessionId, DEFAULT_OWNER)).status,
+      SESSION_LIFECYCLE_STATUSES.FINALIZED
+    );
+    assert.equal((await repository.listMissedPaths()).length, 1);
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
 test("DATA_DELETE_ALL stays empty after restart and preserves Settings", async () => {
   const indexedDB = createFakeIndexedDB();
   globalThis.indexedDB = indexedDB;

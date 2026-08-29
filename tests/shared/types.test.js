@@ -409,6 +409,14 @@ test("validates strict ConsiderationReasonV1 with optional nonnegative contribut
     }),
     true
   );
+  assert.equal(
+    isConsiderationReasonV1({
+      code: CONSIDERATION_REASON_CODES.SELECTED_TAG_SIMILARITY,
+      label: "Candidate tags matched the selected profile.",
+      contribution: 0.15
+    }),
+    true
+  );
 
   const invalidReasons = [
     null,

@@ -54,6 +54,8 @@ function assertRepository(repository) {
     "claimSessionFinalizationLease",
     "releaseSessionFinalizationLease",
     "markCandidateChosen",
+    "getCandidateTagProfile",
+    "getSessionSelectedTagProfile",
     "getChosen",
     "getMissedPath"
   ]) {
@@ -251,13 +253,6 @@ export function createSessionManager(repository, options = {}) {
         const chosen = [];
         const missedPaths = [];
         for (const entry of session.candidates) {
-          const consideration = calculateConsideration(
-            entry.signals,
-            {
-              candidate: entry.candidate,
-              sessionSelectedTagProfile: sessionSelectedTagProfile ?? undefined
-            }
-          );
           const id = createResultId(sessionId, entry.candidate.id, owner);
 
           if (entry.signals.clicked) {
@@ -269,6 +264,23 @@ export function createSessionManager(repository, options = {}) {
             });
             continue;
           }
+
+          // Candidate tags live in their own strict Repository contract;
+          // CandidateV1 deliberately never carries normalizedTags. Missing
+          // enrichment remains an explicit zero-tag fallback.
+          const candidateTagProfile = await repository.getCandidateTagProfile(
+            sessionId,
+            entry.candidate.id,
+            owner
+          );
+          const consideration = calculateConsideration(
+            entry.signals,
+            {
+              candidate: entry.candidate,
+              candidateTagProfile: candidateTagProfile ?? undefined,
+              sessionSelectedTagProfile: sessionSelectedTagProfile ?? undefined
+            }
+          );
 
           if (
             consideration.classification ===

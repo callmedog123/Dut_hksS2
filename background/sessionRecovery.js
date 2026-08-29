@@ -22,6 +22,7 @@ function assertDependencies(repository, sessionManager) {
     typeof repository !== "object" ||
     repository === null ||
     typeof repository.listSessions !== "function" ||
+    typeof repository.getSettings !== "function" ||
     typeof sessionManager !== "object" ||
     sessionManager === null ||
     typeof sessionManager.finalizeSession !== "function"
@@ -99,6 +100,16 @@ export function createSessionRecoveryCoordinator(
         skipped: [],
         failed: []
       };
+
+      // Pausing collection is a privacy boundary, including recovery writes.
+      // Keep stale Sessions intact so an explicit resume can recover them;
+      // never silently settle them while collection is disabled.
+      const settings = await repository.getSettings();
+      if (settings.enabled !== true) {
+        result.skipped.push(...sessions.map((session) => session.sessionId));
+        return result;
+      }
+
       for (const session of sessions) {
         const staleOpen =
           includeOpen &&

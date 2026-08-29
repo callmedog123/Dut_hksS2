@@ -21,20 +21,18 @@ import {
   isReencounterShownResponse,
   isSettingsUpdateResponse
 } from "../shared/messages.js";
+import { CONSIDERATION_REASON_CODES } from "../shared/types.js";
 import { normalizeCandidateUrl } from "../shared/url.js";
 
-const KNOWN_CONSIDERATION_REASON_CODES = new Set([
-  "LONG_EXPOSURE",
-  "LONG_HOVER",
-  "REPEATED_HOVER",
-  "RETURN_VIEW",
-  "NOT_CLICKED"
-]);
+const KNOWN_CONSIDERATION_REASON_CODES = new Set(
+  Object.values(CONSIDERATION_REASON_CODES)
+);
 const CONSIDERATION_REASON_LABELS = new Map([
   ["LONG_EXPOSURE", "较长的累计可见时间表明你曾认真考虑该结果。"],
   ["LONG_HOVER", "较长的累计悬停时间表明你曾认真考虑该结果。"],
   ["REPEATED_HOVER", "多次悬停表明你曾反复考虑该结果。"],
   ["RETURN_VIEW", "再次回看表明你曾认真考虑该结果。"],
+  ["SELECTED_TAG_SIMILARITY", "该结果与你已选择内容的标签相似。"],
   ["NOT_CLICKED", "你在本次搜索中最终没有选择该结果。"]
 ]);
 const KNOWN_REENCOUNTER_REASON_CODES = new Set([
@@ -714,7 +712,7 @@ export function createSidePanelApp({
         resumeCollectionButton.disabled = false;
         settingsStatusElement.setAttribute("data-state", "success");
         settingsStatusElement.textContent = enabled
-          ? "采集已恢复。"
+          ? "采集设置已恢复；已打开的搜索页会在页面更新或刷新后继续采集。"
           : "采集已暂停，已有数据仍可查看和删除。";
       });
     } catch {

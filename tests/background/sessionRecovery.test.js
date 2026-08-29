@@ -6,7 +6,10 @@ import {
   createSessionRecoveryCoordinator
 } from "../../background/sessionRecovery.js";
 import { createSessionManager } from "../../background/sessionManager.js";
-import { SESSION_LIFECYCLE_STATUSES } from "../../shared/types.js";
+import {
+  DEFAULT_SETTINGS_V1,
+  SESSION_LIFECYCLE_STATUSES
+} from "../../shared/types.js";
 import { createRepository } from "../../storage/repository.js";
 import { createTransactionalMemoryStorageAdapter } from "../storage/fixtures/memoryStorageAdapter.js";
 
@@ -138,6 +141,51 @@ test("recovers persisted Chosen and Missed Paths once after a forced exit", asyn
   const repeated = await restarted.scan();
   assert.deepEqual(repeated.finalized, []);
   assert.equal((await repository.listChosen()).length, 1);
+  assert.equal((await repository.listMissedPaths()).length, 1);
+});
+
+test("paused collection prevents recovery settlement until explicitly resumed", async () => {
+  const repository = createRepository(
+    createTransactionalMemoryStorageAdapter()
+  );
+  const owner = createOwner(1, "session-paused-recovery");
+  const [candidate] = await discover(
+    repository,
+    owner.sessionId,
+    1_000,
+    owner
+  );
+  await repository.mergeCandidateSignalsSnapshot(
+    {
+      signals: {
+        candidateId: candidate.id,
+        sessionId: owner.sessionId,
+        visibleMs: 10_000,
+        hoverMs: 3_000,
+        hoverCount: 2,
+        returnCount: 1,
+        clicked: false
+      },
+      updatedAt: 2_000
+    },
+    owner
+  );
+  await repository.saveSettings({ ...DEFAULT_SETTINGS_V1, enabled: false });
+  const nowRef = { value: 2_000 + SESSION_RECOVERY_CONFIG.recoveryWindowMs };
+  const coordinator = createCoordinator(repository, nowRef);
+
+  const paused = await coordinator.scan();
+  assert.deepEqual(paused.skipped, [owner.sessionId]);
+  assert.deepEqual(paused.finalized, []);
+  assert.deepEqual(await repository.listMissedPaths(), []);
+  assert.equal(
+    (await repository.getSession(owner.sessionId, owner)).status,
+    SESSION_LIFECYCLE_STATUSES.OPEN
+  );
+
+  await repository.saveSettings(DEFAULT_SETTINGS_V1);
+  const resumed = await coordinator.scan();
+  assert.deepEqual(resumed.finalized, [owner.sessionId]);
   assert.equal((await repository.listMissedPaths()).length, 1);
 });
 

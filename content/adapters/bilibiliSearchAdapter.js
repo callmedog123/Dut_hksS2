@@ -1,6 +1,7 @@
 // @ts-check
 
 import { normalizeCandidateUrl } from "../../shared/url.js";
+import { CONTENT_TYPES, LAYOUT_TYPES } from "../../shared/types.js";
 import { createCandidateBindingRegistry } from "../candidateBinding.js";
 
 const RESULTS_ROOT_SELECTOR = ".video-list";
@@ -239,7 +240,9 @@ export function createBilibiliSearchAdapter(options = {}) {
           title,
           source: SOURCE,
           rank: index + 1,
-          sessionId
+          sessionId,
+          contentType: CONTENT_TYPES.VIDEO,
+          layoutType: LAYOUT_TYPES.GRID
         };
         bindings.push({ candidate, element: card });
       } catch {

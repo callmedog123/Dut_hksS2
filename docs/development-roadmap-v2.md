@@ -805,7 +805,7 @@ build` 的 build/release validation 通过。真实 Chrome A/B 标签快速切�
 **公式**：
 ```text
 behaviorScore = 0.30 × exposure + 0.30 × hover + 0.25 × returnView + 0.15 × repeatedHover
-selected_tag_similarity = Jaccard(candidate.normalizedTags, sessionSelected.normalizedTags)
+selected_tag_similarity = Jaccard(candidateTagProfile.normalizedTags, sessionSelected.normalizedTags)
                           若 selectedCandidateCount = 0 则取 0
 
 tagBonus = selected_tag_similarity × 0.15
@@ -827,7 +827,7 @@ BILIBILI / GRID:
   exposureMs = 10_000, hoverMs = 3_000, returnCount = 2, repeatedHoverCount = 3
 ZHIHU / TEXT_LIST:
   exposureMs = 15_000, hoverMs = 5_000, returnCount = 3, repeatedHoverCount = 4
-DOUYIN / VIDEO_FEED:
+DOUYIN / GRID（当前搜索页）及 VIDEO_FEED（兼容保留）:
   exposureMs = 8_000, hoverMs = 2_000, returnCount = 2, repeatedHoverCount = 3
 ```
 
@@ -865,7 +865,7 @@ DOUYIN / VIDEO_FEED:
 **公式**：
 ```text
 behaviorScore = 0.32 × exposure + 0.32 × hover + 0.23 × returnView + 0.13 × repeatedHover
-selected_tag_similarity = Jaccard(candidate.normalizedTags, sessionSelected.normalizedTags)
+selected_tag_similarity = Jaccard(candidateTagProfile.normalizedTags, sessionSelected.normalizedTags)
                           若 selectedCandidateCount = 0 则取 0
 
 totalScore = 0.90 × behaviorScore + 0.10 × selected_tag_similarity
@@ -906,7 +906,7 @@ totalScore = 0.90 × behaviorScore + 0.10 × selected_tag_similarity
 **公式**：
 ```text
 behaviorScore = 0.30 × exposure + 0.30 × hover + 0.25 × returnView + 0.15 × repeatedHover
-selected_tag_similarity = Jaccard(candidate.normalizedTags, sessionSelected.normalizedTags)
+selected_tag_similarity = Jaccard(candidateTagProfile.normalizedTags, sessionSelected.normalizedTags)
                           若 selectedCandidateCount = 0 则取 0
 
 tagBonus = min(0.20, selected_tag_similarity × 0.20)
@@ -961,7 +961,7 @@ totalScore = behaviorScore + tagBonus
 - 平台 caps：
   - BILIBILI / GRID: exposureMs=10000, hoverMs=3000, returnCount=2, repeatedHoverCount=3；
   - ZHIHU / TEXT_LIST: exposureMs=15000, hoverMs=5000, returnCount=3, repeatedHoverCount=4；
-  - DOUYIN / VIDEO_FEED: exposureMs=8000, hoverMs=2000, returnCount=2, repeatedHoverCount=3；
+  - DOUYIN / GRID（当前搜索页）及 VIDEO_FEED（兼容保留）: exposureMs=8000, hoverMs=2000, returnCount=2, repeatedHoverCount=3；
 - Reason codes：`LONG_EXPOSURE`、`LONG_HOVER`、`RETURN_VIEW`、`REPEATED_HOVER`、`SELECTED_TAG_SIMILARITY`、`NOT_CLICKED`。
 
 **明确限制**：
@@ -1008,7 +1008,7 @@ selected_tag_similarity_weight = 0.15
 ```text
 - clicked = true → 永远 EXCLUDED_CLICKED，score = 0
 - 标签不能单独或绕过最低行为门槛生成 MissedPath（必须 behaviorScore ≥ 0.35）
-- selected_tag_similarity = Jaccard(candidate.normalizedTags, sessionSelected.normalizedTags)
+- selected_tag_similarity = Jaccard(candidateTagProfile.normalizedTags, sessionSelected.normalizedTags)
   若 selectedCandidateCount = 0 则取 0
 - tagBonus = selected_tag_similarity × 0.15
 ```
@@ -1027,7 +1027,7 @@ ZHIHU / TEXT_LIST:
   returnCount = 3
   repeatedHoverCount = 4
 
-DOUYIN / VIDEO_FEED:
+DOUYIN / GRID（当前搜索页）及 VIDEO_FEED（兼容保留）:
   exposureMs = 8_000
   hoverMs = 2_000
   returnCount = 2
@@ -1058,13 +1058,13 @@ NOT_CLICKED        → 贡献 = 0（占位）
 **修改文件**：
 - `background/scoringConfig.js`：添加 `weights.selectedTagSimilarity=0.15`、`minimumBehaviorThreshold=0.35`、平台特定 `normalizationCapsByPlatform`、导出 `getNormalizationCapsForCandidate()`；
 - `background/consideration.js`：新增 `jaccardSimilarity()` 纯函数、重写 `calculateConsideration(signals, context)` 支持 `selected_tag_similarity`、最低行为门槛检查、`SELECTED_TAG_SIMILARITY` reason code；
-- `background/sessionManager.js`：在 `finalizeSession` 中读取 `SessionSelectedTagProfile` 并传给 `calculateConsideration`；
+- `background/sessionManager.js`：在 `finalizeSession` 中读取 `SessionSelectedTagProfile` 与每个未点击候选的 `CandidateTagProfile`，并作为独立严格 DTO 传给 `calculateConsideration`；
 - 新增 `tests/background/consideration.test.js`（23 个测试）。
 
 **实现内容**：
-- `calculateConsideration(signals, context)` 现在接受可选 `context` 参数（含 `candidate` 和 `sessionSelectedTagProfile`）；
+- `calculateConsideration(signals, context)` 现在接受可选 `context` 参数（含 `candidate`、`candidateTagProfile` 和 `sessionSelectedTagProfile`）；
 - 计算 `behaviorScore`（4 项行为 × 对应权重）；
-- 计算 `selectedTagSimilarity`（Jaccard 相似度，候选 normalizedTags 与 sessionSelectedTagProfile.tags 的交集/并集）；
+- 计算 `selectedTagSimilarity`（Jaccard 相似度，`CandidateTagProfile.normalizedTags` 与 `sessionSelectedTagProfile.tags` 的交集/并集）；`CandidateV1` 不携带标签字段；
 - `tagBonus = selectedTagSimilarity × 0.15`；
 - 若 `behaviorScore < 0.35` 直接返回 `BELOW_THRESHOLD`（标签不能绕过最低行为门槛）；
 - `totalScore = behaviorScore + tagBonus`，与 0.55 阈值比较；
@@ -1398,6 +1398,45 @@ Adapter。
 **任务 16 状态**：COMPLETED（DOM hashtag 与本地 fallback 闭环、自动验证和文档）；
 真实 Chrome 手动验收：PENDING。
 
+### 步骤 10：三平台集成回归、手动验收与材料同步（2026-08-29）
+
+**开始 HEAD**：`4ac0c6b`（当前工作树，含步骤 5/任务 9-17 修复未提交改动）
+
+对任务 9～16 的当前单线实现执行一次只读集成回归追踪，逐段核对 A～G 真实代码流，未发现需要新增修复的接线缺陷（此前"任务 17 验收后修复记录"已处理的六项问题保持有效，本步骤在其基础上核实，未重复修复）。
+
+**逐段追踪结果**：
+
+- **A. 三站点 Adapter → Site Runtime → Candidate/Element Binding → Session Owner**：`content/adapters/registry.js` 的 `createRealSiteAdapterRegistry` 注册 Bilibili/Zhihu/Douyin 三个 Adapter；`tests/adapters/registry.test.js` 验证三站点 URL 精确匹配、互不冲突、非受支持 URL 返回 `null`。三个 Runtime（`bilibiliRuntime.js`/`zhihuRuntime.js`/`douyinRuntime.js`）均为薄封装，委托给共享 `createSiteRuntime`；`scripts/validate-build.js` 静态检查确认 `content/siteRuntime.js` 不含任何站点选择器或 URL 字符串。状态：**完整接通**。
+- **B. visibility/hover/return/click → checkpoint → Repository**：共享 collectors（`eventCollector/click.js`、`eventCollector/hover.js`、`visibility.js`）由 `siteRuntime.js` 统一调度，三个 Adapter 均不重复实现采集逻辑。状态：**完整接通**（任务 0-6 既有基础设施，本次未改动）。
+- **C. 本地/原生标签 → Context/Candidate/Selected TagProfile**：Bilibili 无原生标签（任务 9 审计确认），Zhihu Provider 恒为 `null`（任务 14 审计确认无 Cookie 情况下拿不到官方接口），Douyin 通过 Adapter 可选的 `extractCandidateTags()` 读取 DOM 可见 hashtag。三者统一走 `CANDIDATE_TAGS_DISCOVERED` 消息 → `background/candidateTagsUpdate.js` → `CandidateTagProfileV1`，`serviceWorker.js` 的 `tagEnrichmentCoordinatorFacade` 在 discovery/signals/finalize 三个真实路径调用。状态：**完整接通，但 Bilibili/Zhihu 原生标签能力本身未实现**，已在 README、data-contract 如实披露。
+- **D. TagProfile + behavior → Consideration v2 → Chosen/Missed**：`background/sessionManager.js` 的 `finalizeSession` 逐候选读取 `CandidateTagProfileV1` 与 `SessionSelectedTagProfileV1`，传给 `calculateConsideration`；`clicked` 候选在标签查询之前即 `continue` 进入 Chosen，不会被标签逻辑污染。状态：**完整接通**。
+- **E. 当前 active tab → Re-encounter v2 → SHOWN/FEEDBACK/cooldown**：`background/reencounterQuery.js` 的 `execute(payload, activeTabId)` 校验 `activeContext.context` 与 `payload.context` 完全一致（`isSameContext`）才读取标签 Profile，防止跨 tab/跨情境串号；Side Panel 侧 `contextLoadGeneration` 计数器保证快速切 tab 时旧响应被丢弃。状态：**完整接通**。
+- **F. Worker/浏览器退出 → lease takeover → 原子幂等 finalize**：`background/sessionRecovery.js` 在每轮 `scan()` 开头读取 `Settings.enabled`，暂停时整体跳过，不做恢复结算（任务 17 修复记录已处理并验证）。状态：**完整接通**。
+- **G. 暂停、单删、清空 → Session/Tag/Reencounter 最终状态**：`deleteMissedPath` 级联删除关联 Reencounter；`deleteAll` 走 `adapter.commit({clear: true})` 保留 schemaVersion 和 Settings；`repository.js` 的 `deleteSessionTagProfiles`/`deleteSession` 级联清理 owner 隔离的标签记录。状态：**完整接通**。
+
+**核查但未发现新缺陷的关键正确性项**：
+- `CANDIDATE_CHOSEN` 走 `serviceWorker.js` 内联逻辑（非 `messageRouter.js` 统一暂停门禁），但有独立的 `settings.enabled` 检查（第 278-285 行）且被 `tests/background/serviceWorkerRecovery.test.js` 的暂停场景专项覆盖（含在 `blockedMessages` 数组中）。
+- Zhihu/Douyin Adapter 均排除广告、用户卡片（`isAdvertisement`、`type=user` URL 拒绝），且有专项测试覆盖。
+- `getCandidateTagProfileForMissedPath` 通过 MissedPath ID 反解 session/candidate identity 读取标签，不接受 Side Panel 传入的 owner，不会跨 owner 泄漏。
+
+**自动验证**（本步骤重新运行，非仅专项）：
+```text
+node --test        → 496/496 通过，7 suites，0 失败
+npm test            → 496/496 通过，7 suites，0 失败
+npm run typecheck  → 107 个 JavaScript 文件通过
+npm run build       → build/release validation 通过
+git diff --check    → 通过（仅 LF/CRLF 提示）
+```
+
+**真实 Chrome 验收**：本步骤未执行，也无法由自动化代理执行。三平台真实浏览器验收（初始/动态/SPA/去重/cleanup、普通/Ctrl/Cmd/中键点击、两 tab、Worker 强退恢复、暂停/单删/清空、标签来源/fallback、跨平台重逢）仍是 **PENDING**，需要用户按 `docs/manual-browser-checklist.md` 执行。
+
+**比赛材料检查**：README、data-contract、architecture、permissions-and-privacy 已同步反映"Bilibili/Zhihu 无原生标签、Douyin 用 DOM hashtag"的真实范围，未发现声称未实现能力的表述。
+
+**已知限制（本步骤未修复，明确记录）**：
+- 评分参数（Consideration v2、Re-encounter v2）均标注 `UNVALIDATED_PENDING_5_TO_10_PERSON_TEST`；
+- 三平台 DOM 结构可能随时间变化，自动测试不能替代真实 Chrome 手动验收；
+- "开发起点证明"截图隐私风险（详见任务 17 验收部分）尚未处理。
+
 **下一步**：任务 17（三平台最终集成与发布只读验收）；任务 17 不得修改文件。
 
 ### 任务 17：最终三平台集成与发布验收
@@ -1429,6 +1468,33 @@ clicked 排除、标签 fallback、跨平台重逢、最多三条、冷却、负
 
 本任务只读，不修改、提交、推送、打 tag 或打包。
 ```
+
+#### 任务 17 验收后修复记录（2026-08-29）
+
+用户在只读验收结束后另行授权修复，已处理可由代码确定的问题：
+
+- Consideration 不再从严格 `CandidateV1` 读取不存在的 `normalizedTags`；
+  `SessionManager` 逐候选读取独立的 `CandidateTagProfileV1`，连同
+  `SessionSelectedTagProfileV1` 传入评分；缺少 Profile 时标签加分为 0；
+- `SELECTED_TAG_SIMILARITY` 已加入共享持久化 reason code，真实标签加分结果可通过
+  `MissedPathV1` 校验并进入原子结算；新增严格 Repository 集成测试，禁止用给
+  Candidate 临时添加额外字段的测试形状冒充运行时；
+- Side Panel 的原因白名单直接来自共享 reason code 枚举，并为标签相似度提供中文文案，
+  因而不会把合法的标签加分 MissedPath 误判成协议错误；
+- 当前抖音搜索 Adapter 使用 `GRID`，评分配置为 `DOUYIN/GRID` 增加已冻结的抖音
+  caps；`VIDEO_FEED` 使用同值兼容保留，不再回退到 Bilibili；
+- Bilibili 新 Candidate 现在明确写入 `contentType=VIDEO`、`layoutType=GRID`，历史
+  v2 缺字段记录仍按既有兼容规则读取，不提升 schemaVersion；
+- Session Recovery 在每轮扫描前读取 Settings；暂停时跳过全部恢复结算并保留
+  OPEN Session，明确恢复后才允许结算。单元测试和真实 Service Worker 重启测试
+  均覆盖“暂停→启动扫描→无写入→恢复→结算”；
+- Side Panel 恢复文案、README、数据契约、权限隐私和人工检查表同步说明：已打开且
+  曾暂停的页面需等待 DOM 更新或刷新后重新开始采集。
+
+自动验证：`node --test` 与 `npm test` 均为 496/496 通过（7 suites、0 失败）；
+`npm run typecheck` 检查 107 个 JavaScript 文件通过；`npm run build` 的 build/release
+validation 通过；`git diff --check` 通过。真实 Chrome 三站、多标签、强退恢复和
+当前版本视频仍须人工完成，不能由上述自动测试替代。
 
 ## 12. 每项任务完成报告模板
 
