@@ -7,10 +7,9 @@ import test from "node:test";
 
 const validatorPath = path.resolve("scripts/validate-build.js");
 const BILIBILI_MATCH = "https://search.bilibili.com/*";
-const CONTENT_MODULE_RESOURCES = [
-  "content/bilibiliRuntime.js",
-  "content/siteRuntime.js",
-  "content/adapters/bilibiliSearchAdapter.js",
+const ZHIHU_CONTENT_MATCH = "https://www.zhihu.com/search*";
+const ZHIHU_RESOURCE_MATCH = "https://www.zhihu.com/*";
+const SHARED_RESOURCES = [
   "content/candidateBinding.js",
   "content/eventCollector/click.js",
   "content/eventCollector/hover.js",
@@ -18,6 +17,18 @@ const CONTENT_MODULE_RESOURCES = [
   "shared/messages.js",
   "shared/types.js",
   "shared/url.js"
+];
+const BILIBILI_RESOURCES = [
+  "content/bilibiliRuntime.js",
+  "content/siteRuntime.js",
+  "content/adapters/bilibiliSearchAdapter.js",
+  ...SHARED_RESOURCES
+];
+const ZHIHU_RESOURCES = [
+  "content/zhihuRuntime.js",
+  "content/siteRuntime.js",
+  "content/adapters/zhihuSearchAdapter.js",
+  ...SHARED_RESOURCES
 ];
 
 function createBuildFixture(t, overrides = {}) {
@@ -37,12 +48,21 @@ function createBuildFixture(t, overrides = {}) {
         matches: [BILIBILI_MATCH],
         js: ["content/contentScript.js"],
         run_at: "document_idle"
+      },
+      {
+        matches: [ZHIHU_CONTENT_MATCH],
+        js: ["content/zhihuContentScript.js"],
+        run_at: "document_idle"
       }
     ],
     web_accessible_resources: [
       {
-        resources: CONTENT_MODULE_RESOURCES,
+        resources: BILIBILI_RESOURCES,
         matches: [BILIBILI_MATCH]
+      },
+      {
+        resources: ZHIHU_RESOURCES,
+        matches: [ZHIHU_RESOURCE_MATCH]
       }
     ],
     background: { service_worker: "background/serviceWorker.js" },
@@ -61,7 +81,9 @@ function createBuildFixture(t, overrides = {}) {
     "shared/messages.js",
     "content/demoRuntime.js",
     "content/contentScript.js",
-    ...CONTENT_MODULE_RESOURCES,
+    "content/zhihuContentScript.js",
+    ...BILIBILI_RESOURCES,
+    ...ZHIHU_RESOURCES,
     "sidepanel/app.js",
     "demo/index.html",
     "demo/app.js"
@@ -78,6 +100,19 @@ function createBuildFixture(t, overrides = {}) {
   writeFileSync(
     path.join(root, "content/contentScript.js"),
     'const runtimeModuleUrl = chrome.runtime.getURL("content/bilibiliRuntime.js"); import(runtimeModuleUrl).then(({ startBilibiliRuntime }) => startBilibiliRuntime());',
+    "utf8"
+  );
+  writeFileSync(
+    path.join(root, "content/zhihuContentScript.js"),
+    'const runtimeModuleUrl = chrome.runtime.getURL("content/zhihuRuntime.js"); import(runtimeModuleUrl).then(({ startZhihuRuntime }) => startZhihuRuntime());',
+    "utf8"
+  );
+  writeFileSync(
+    path.join(root, "content/zhihuRuntime.js"),
+    [
+      'import "./adapters/zhihuSearchAdapter.js";',
+      'import "./siteRuntime.js";'
+    ].join("\n"),
     "utf8"
   );
   writeFileSync(
@@ -102,7 +137,7 @@ function createBuildFixture(t, overrides = {}) {
   return root;
 }
 
-test("build validation accepts only the approved Bilibili search permission", (t) => {
+test("build validation accepts Bilibili plus the approved Zhihu search scope", (t) => {
   const root = createBuildFixture(t);
   const result = spawnSync(process.execPath, [validatorPath], {
     cwd: root,
@@ -128,7 +163,7 @@ test("build validation rejects any additional host permission", (t) => {
   );
 });
 
-test("build validation rejects broad or second-site content script matches", (t) => {
+test("build validation rejects broad content script matches", (t) => {
   const root = createBuildFixture(t, {
     content_scripts: [
       {
@@ -144,10 +179,10 @@ test("build validation rejects broad or second-site content script matches", (t)
   });
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /one exact Bilibili isolated entry/u);
+  assert.match(result.stderr, /exact Bilibili and approved Zhihu search entries/u);
 });
 
-test("build validation rejects a second content script entry", (t) => {
+test("build validation rejects an unapproved third content script entry", (t) => {
   const root = createBuildFixture(t, {
     content_scripts: [
       {
@@ -156,8 +191,13 @@ test("build validation rejects a second content script entry", (t) => {
         run_at: "document_idle"
       },
       {
-        matches: ["https://www.bilibili.com/*"],
-        js: ["content/contentScript.js"],
+        matches: [ZHIHU_CONTENT_MATCH],
+        js: ["content/zhihuContentScript.js"],
+        run_at: "document_idle"
+      },
+      {
+        matches: ["https://example.com/*"],
+        js: ["content/zhihuContentScript.js"],
         run_at: "document_idle"
       }
     ]
@@ -168,7 +208,36 @@ test("build validation rejects a second content script entry", (t) => {
   });
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /one exact Bilibili isolated entry/u);
+  assert.match(result.stderr, /exact Bilibili and approved Zhihu search entries/u);
+});
+
+test("build validation rejects a Zhihu host permission", (t) => {
+  const root = createBuildFixture(t, {
+    host_permissions: [BILIBILI_MATCH, ZHIHU_RESOURCE_MATCH]
+  });
+  const result = spawnSync(process.execPath, [validatorPath], {
+    cwd: root,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /host_permissions must contain only/u);
+});
+
+test("build validation rejects a broad Zhihu web-accessible scope", (t) => {
+  const root = createBuildFixture(t, {
+    web_accessible_resources: [
+      { resources: BILIBILI_RESOURCES, matches: [BILIBILI_MATCH] },
+      { resources: ZHIHU_RESOURCES, matches: ["<all_urls>"] }
+    ]
+  });
+  const result = spawnSync(process.execPath, [validatorPath], {
+    cwd: root,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /approved site runtime modules/u);
 });
 
 test("build validation rejects collectors left in the Bilibili wrapper", (t) => {
@@ -192,7 +261,7 @@ test("build validation rejects collectors left in the Bilibili wrapper", (t) => 
   assert.match(result.stderr, /delegate collectors to the shared Site Runtime/u);
 });
 
-test("build validation rejects Bilibili DOM knowledge in Site Runtime", (t) => {
+test("build validation rejects site DOM knowledge in Site Runtime", (t) => {
   const root = createBuildFixture(t);
   writeFileSync(
     path.join(root, "content/siteRuntime.js"),
@@ -212,5 +281,5 @@ test("build validation rejects Bilibili DOM knowledge in Site Runtime", (t) => {
   });
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /must not contain Bilibili imports/u);
+  assert.match(result.stderr, /must not contain site Adapter imports/u);
 });

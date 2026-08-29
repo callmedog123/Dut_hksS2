@@ -65,7 +65,7 @@ Bilibili：<BV 号>                      例如 BV1xx4y1x7abc         （不变�
 extractCandidateTags(document) => [{candidateId, nativeTags}, ...]
 ```
 
-未实现该方法的 Adapter（当前 Demo、Bilibili）不受影响，Runtime 检测到方法不存在时直接跳过，标签退回任务 7/8 的本地标题/搜索词 fallback。DOM Element 永远不会通过这个方法进入消息或存储；返回值必须是纯数据。
+未实现该方法的 Adapter（当前 Demo、Bilibili、知乎）不受影响，Runtime 检测到方法不存在时直接跳过，标签退回任务 7/8 的本地标题/搜索词 fallback。DOM Element 永远不会通过这个方法进入消息或存储；返回值必须是纯数据。
 
 ## 标签消息通道（步骤 5 新增）
 
@@ -114,7 +114,7 @@ exposure 单独           → 永不合格
 
 `behaviorScore` 只使用现有四项行为特征。由于 exposure 单项权重上限为 0.30，低于 0.35，饱和曝光单独无法触发原生标签请求；这是为降低网格中同一行卡片共同曝光导致的误判。每会话最多富化 12 个候选，单候选最多尝试 2 次，退避从 5000ms 起按 2 倍增长。这些值状态为 `UNVALIDATED_PENDING_5_TO_10_PERSON_TEST`。
 
-同一候选的并发请求合并为一次 Provider 调用，成功结果缓存，失败按退避重试。Provider 缓存、并发合并表和退避表只存在于 Worker 生命周期内存中，属于网络优化；权威标签数据全部保存在 Repository，Worker 重启后仍可读取。Provider 失败或缺失一律退回搜索词/标题本地标签，绝不阻塞 finalize。任务 8 只使用 fake provider，没有真实平台网络访问，也没有新增权限。
+同一候选的并发请求合并为一次 Provider 调用，成功结果缓存，失败按退避重试。Provider 缓存、并发合并表和退避表只存在于 Worker 生命周期内存中，属于网络优化；权威标签数据全部保存在 Repository，Worker 重启后仍可读取。Provider 失败或缺失一律退回搜索词/标题本地标签，绝不阻塞 finalize。任务 8 的真实运行时 Provider 为 `null`，测试只使用 fake provider；任务 14 审计后知乎仍保持该路径，因为搜索卡片无可见话题，公开 topic-only 路径不可用，其他来源需要整页抓取或 Bearer/登录态。没有新增网络访问或权限。
 
 ## Repository 记录种类
 

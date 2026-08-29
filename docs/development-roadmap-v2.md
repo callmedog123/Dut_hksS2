@@ -212,8 +212,8 @@ Bilibili / Zhihu / Douyin Search Page
 | 10 | 冻结 Consideration v2 公式 | P1 | 7、8 | COMPLETED |
 | 11 | 实施 Consideration v2 | P1 | 10 | COMPLETED |
 | 12 | 跨平台 Re-encounter v2 | P1 | 11 | COMPLETED |
-| 13 | 知乎 Adapter 与 Runtime | P2 | 6、8、12 | PENDING |
-| 14 | 知乎原生标签增强 | P2 | 13 | PENDING |
+| 13 | 知乎 Adapter 与 Runtime | P2 | 6、8、12 | COMPLETED |
+| 14 | 知乎原生标签增强 | P2 | 13 | PARTIAL（审计与 fallback COMPLETED；原生 Provider 未实现） |
 | 15 | 抖音 Adapter 与 Runtime | P2 | 6、8、12 | PENDING |
 | 16 | 抖音原生标签增强 | P2 | 15 | PENDING |
 | 17 | 三平台最终集成与发布验收 | P0 | 9、12、14、16 | PENDING |
@@ -384,8 +384,8 @@ Bilibili / Zhihu / Douyin Search Page
 | `sidePanel` | 已批准并实现 | Side Panel |
 | `https://search.bilibili.com/*` | 已批准并实现 | Bilibili 搜索页 Content Script |
 | Bilibili 原生标签域名 | 已审计、确认为 DOM 无稳定标签 | 任务 9 真实 DevTools 审计；当前不使用网络 Provider |
-| 知乎搜索页范围 | 产品方向已确认，精确 Match 待确认 | 任务 13 |
-| 知乎标签数据域名 | 未确认 | 任务 14 |
+| `https://www.zhihu.com/search*` | 已批准并实现 | 知乎搜索页 Content Script；不新增 Zhihu host permission |
+| 知乎标签数据域名 | 已审计、不申请 | 搜索卡片无可见话题；详情页/API 需要整页访问、登录态或 Bearer 凭据，继续本地 fallback |
 | 抖音搜索页范围 | 产品方向已确认，精确 Match 待确认 | 任务 15 |
 | 抖音标签数据域名 | 未确认 | 任务 16 |
 | `tabs` 或 `activeTab` | 无需新增 | 当前只用 `chrome.tabs.query` 读取非敏感 tab ID；未读取 URL/title/favicon 等敏感属性 |
@@ -401,7 +401,7 @@ Bilibili / Zhihu / Douyin Search Page
 - Selected Tag Similarity 的精确权重；
 - 不同平台/内容类型/layout 的归一化 caps；
 - Re-encounter v2 已冻结为方案 A；具体数值仍待 5～10 人用户测试校准；
-- 三个平台的实际原生标签数据源和 Host Permission；
+- 抖音的实际原生标签数据源和 Host Permission；Bilibili/知乎已审计并采用本地 fallback；
 
 这些值不得由 AI 在实现时自行猜测。对应任务必须先给出选项、风险和推荐方案，然后等待用户确认。
 
@@ -1231,6 +1231,34 @@ URL、content-script match 和 host permission。
 验收包括点击方式、多标签页、恢复结算和真实 Chrome 手动检查。
 ```
 
+#### 任务 13 完成记录（2026-08-29）
+
+- 已确认真实搜索入口为 `https://www.zhihu.com/search?type=content&q=<query>`，
+  hostname 为 `www.zhihu.com`；搜索提交会产生已提交的新文档导航，结果列表支持
+  动态追加与节点替换；
+- 已批准并实现精确 content-script match `https://www.zhihu.com/search*`，以及仅供
+  该页面加载本地模块的 web-accessible resource match `https://www.zhihu.com/*`；
+  未新增 Zhihu host permission；
+- 已实现 QUESTION、ANSWER、ARTICLE 三类 Candidate；回答 URL 指向具体回答，文章
+  URL 指向知乎专栏永久地址；ID 使用 `zhihu:<contentType>:<stableId>` 命名空间；
+- Adapter 只读取标题、稳定链接和最小结构标记，跳过广告、用户、无永久 URL、空标题
+  和异常卡片；未读取正文、完整摘要、用户资料、评论、Cookie 或 Token；
+- 已复用通用 Site Runtime、Candidate binding、visibility/hover/click collectors、
+  Session 检查点与恢复结算；Demo 与 Bilibili 接线保持不变；
+- 真实页面只读审计确认 AnswerItem、PostItem 与问题 Content 卡片可由稳定链接识别；
+  两次滚动时结果节点数从 24 增至 44、再增至 64；当前页面没有稳定可复用的原生标签，
+  因而保留本地 fallback；
+- 自动验证：全仓 `node --test` / `npm test` 466/466 通过，`npm run typecheck`
+  检查 101 个 JavaScript 文件通过，`npm run build` 的 build/release validation 通过，
+  `git diff --check` 通过；
+- 真实 Chrome unpacked extension 手动验收尚未执行。内置浏览器的已登录页面审计只证明
+  当前 DOM 与交互事实，不替代扩展 Content Script、点击采集、多 tab owner 与恢复流程的
+  Chrome 手动验证。
+
+**任务 13 状态**：COMPLETED（实现、自动测试与文档）；真实 Chrome 手动验收：PENDING。
+
+**下一步**：任务 14（知乎原生标签增强）；本任务完成后不得自动开始。
+
 ### 任务 14：知乎原生标签增强
 
 ```text
@@ -1249,6 +1277,32 @@ URL、content-script match 和 host permission。
 
 不修改评分、Side Panel 或其他站点。
 ```
+
+#### 任务 14 审计与 fallback 完成记录（2026-08-29）
+
+- 在已登录的真实知乎搜索页检查 QUESTION、ANSWER、ARTICLE 使用的语义卡片边界；
+  当前样本的 19 个结果模块中没有任何可见 `/topic/` 链接或 Tag/Topic 元素；
+- QUESTION 与 ANSWER 详情页能看到 `TopicLink`，ARTICLE 详情页能看到
+  `TopicList Post-Topics`/`TopicLink`，但这些标签不在搜索卡片 DOM 中；
+- 不带 Cookie/Token 的详情页 HEAD 请求返回 403；候选级
+  `/api/v4/.../topics` 路径返回 404；知乎官方数据开放平台要求 Bearer 凭据；
+- 因此没有符合“只取标签、不取正文、无需登录/签名/密钥”的稳定公开来源。按照任务
+  冻结边界，不抓取详情页 HTML、不读取登录 Cookie/Token、不接开放平台密钥；
+- 生产 `TagProvider` 明确保留为 `null`，不新增知乎 host permission 或网络请求；
+  达到任务 8 门槛的 Candidate 继续由同一个 Coordinator 生成并持久化标题/搜索词
+  `LOCAL_FALLBACK` TagProfile；QUESTION、ANSWER、ARTICLE 不创建第二套类型；
+- 门槛、每会话上限、缓存/并发合并/退避、两 tab Owner 隔离、Worker 重启读取、暂停、
+  删除与清空均复用任务 8 已有实现，不修改评分、Side Panel、Bilibili 或抖音；
+- 专项回归 60/60 通过；全仓 `node --test` 与 `npm test` 467/467 通过；
+  `npm run typecheck` 检查 101 个 JavaScript 文件通过；`npm run build` 的
+  build/release validation 通过；
+- 内置浏览器完成了标签来源审计；加载 unpacked extension 的真实 Chrome Network/
+  IndexedDB 手动确认仍待执行，不能由自动测试替代。
+
+**任务 14 状态**：PARTIAL（隐私安全的审计与 fallback 路径 COMPLETED；没有声称已取得
+知乎原生标签，原生 Provider 未实现）。
+
+**下一步**：任务 15（抖音 Adapter 与 Runtime）；本任务完成后不得自动开始。
 
 ### 任务 15：抖音 Adapter 与 Runtime
 

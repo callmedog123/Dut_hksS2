@@ -30,6 +30,7 @@ const DEBUG_ARTIFACT_EXTENSIONS = new Set([
   ".zip"
 ]);
 const BILIBILI_MATCH = "https://search.bilibili.com/*";
+const ZHIHU_CONTENT_MATCH = "https://www.zhihu.com/search*";
 
 function readJson(root, relativePath, failures) {
   try {
@@ -118,6 +119,7 @@ export function validateRelease(root = process.cwd()) {
     "chrome-extension://<扩展 ID>/demo/index.html",
     "`sidePanel`",
     BILIBILI_MATCH,
+    ZHIHU_CONTENT_MATCH,
     "npm test",
     "docs/architecture.md",
     "docs/data-contract.md",
@@ -131,6 +133,7 @@ export function validateRelease(root = process.cwd()) {
   for (const snippet of [
     "`permissions: [\"sidePanel\"]`",
     "`host_permissions: [\"https://search.bilibili.com/*\"]`",
+    ZHIHU_CONTENT_MATCH,
     "清空业务数据",
     "Settings",
     "不保存什么"

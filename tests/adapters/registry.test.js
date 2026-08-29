@@ -7,6 +7,7 @@ import {
   createSiteAdapterRegistry
 } from "../../content/adapters/registry.js";
 import { createBilibiliDocumentFixture } from "./fixtures/bilibiliDom.js";
+import { createZhihuDocumentFixture } from "./fixtures/zhihuDom.js";
 
 const testUrl = new URL("https://example.invalid/search?q=robotics");
 const testDocument = {};
@@ -94,8 +95,9 @@ test("returns an idempotent observer cleanup", () => {
   assert.equal(cleanupCount, 1);
 });
 
-test("real-site registry matches only Bilibili search contexts", () => {
+test("real-site registry matches only approved Bilibili and Zhihu searches", () => {
   const fixture = createBilibiliDocumentFixture();
+  const zhihuFixture = createZhihuDocumentFixture();
   const registry = createRealSiteAdapterRegistry({
     document: fixture.document,
     sessionIdFactory: () => "registry-session"
@@ -119,6 +121,27 @@ test("real-site registry matches only Bilibili search contexts", () => {
     registry.resolve(
       new URL("https://www.bilibili.com/?keyword=robotics"),
       fixture.document
+    ),
+    null
+  );
+  assert.notEqual(
+    registry.resolve(
+      new URL("https://www.zhihu.com/search?type=content&q=robotics"),
+      zhihuFixture.document
+    ),
+    null
+  );
+  assert.equal(
+    registry.resolve(
+      new URL("https://www.zhihu.com/search?type=people&q=robotics"),
+      zhihuFixture.document
+    ),
+    null
+  );
+  assert.equal(
+    registry.resolve(
+      new URL("https://zhuanlan.zhihu.com/p/123"),
+      zhihuFixture.document
     ),
     null
   );

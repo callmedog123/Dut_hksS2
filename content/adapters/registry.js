@@ -2,6 +2,8 @@
 
 import { assertSiteAdapter } from "./types.js";
 import { createBilibiliSearchAdapter } from "./bilibiliSearchAdapter.js";
+import { createZhihuSearchAdapter } from "./zhihuSearchAdapter.js";
+import { createDouyinSearchAdapter } from "./douyinSearchAdapter.js";
 
 export class AdapterConflictError extends Error {
   /**
@@ -83,13 +85,15 @@ export function createSiteAdapterRegistry(adapters = []) {
 }
 
 /**
- * Registry for the single approved real site. The local Demo Adapter remains
+ * Registry for the approved real search sites. The local Demo Adapter remains
  * opt-in and is intentionally not part of this real-site registry.
  *
  * @param {Parameters<typeof createBilibiliSearchAdapter>[0]} [options]
  */
 export function createRealSiteAdapterRegistry(options = {}) {
   return createSiteAdapterRegistry([
-    createBilibiliSearchAdapter(options)
+    createBilibiliSearchAdapter(options),
+    createZhihuSearchAdapter(options),
+    createDouyinSearchAdapter(options)
   ]);
 }

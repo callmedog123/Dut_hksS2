@@ -2,7 +2,7 @@
 
 The Unclicked 是一个 Chrome Manifest V3、local-first 的比赛原型：它记住用户在搜索结果页中“认真考虑过但最终没有选择”的候选，并在之后出现相关搜索情境时，以可解释的方式让这些路径重新出现。
 
-当前 P0 是可安装、可测试的扩展源码，不是云服务。运行时不使用大模型、Embedding、后端、账号或云同步；真实站点只接入 Bilibili 搜索页，本地 Demo 用来稳定复现完整闭环。
+当前 v2 是可安装、可测试的扩展源码，不是云服务。运行时不使用大模型、Embedding、后端、账号或云同步；真实站点接入 Bilibili 与知乎搜索页，本地 Demo 用来稳定复现完整闭环。
 
 ## 它解决什么问题
 
@@ -20,7 +20,7 @@ The Unclicked 是一个 Chrome Manifest V3、local-first 的比赛原型：它�
 
 ```mermaid
 flowchart LR
-  A[本地 Demo / Bilibili 搜索页] --> B[Site Adapter]
+  A[本地 Demo / Bilibili / 知乎搜索页] --> B[Site Adapter]
   B --> C[Candidate 与页面内 Element 绑定]
   C --> D[可见 / Hover / 回看 / 点击聚合]
   D --> E[Chrome 消息契约]
@@ -84,7 +84,13 @@ Demo 使用 `knowledge.example` 占位 URL，不代表外部页面可访问，�
 
 P0 只在 `https://search.bilibili.com/*` 运行，并要求 URL 含非空 `keyword` 查询参数。当前 Adapter 识别 `.video-list` 内的 `.bili-video-card`，读取标题和指向 `https://www.bilibili.com/video/BV...` 的视频链接；它支持初始结果、动态新增结果、搜索词 SPA 切换和普通/中键/Ctrl/Cmd 点击归因。
 
-这不是对整个 Bilibili 站点的支持：主页、视频详情页、其他域名、非视频结果和第二个真实站点均不在 P0 范围内。页面 DOM/类名更新可能使选择器失效；失效时 Runtime 应安全降级，但需要更新 Adapter 和重新人工验证。
+这不是对整个 Bilibili 站点的支持：主页、视频详情页、其他域名和非视频结果均不在支持范围。页面 DOM/类名更新可能使选择器失效；失效时 Runtime 应安全降级，但需要更新 Adapter 和重新人工验证。
+
+## 知乎支持范围
+
+知乎入口只匹配 `https://www.zhihu.com/search*`；Adapter 进一步要求精确 `/search` 路径、非空 `q`，且 `type` 为 `content` 或缺省。只识别问题、具体回答和文章：问题 URL 固定为 `www.zhihu.com/question/<id>`，回答必须包含具体 `/answer/<id>`，文章固定为 `zhuanlan.zhihu.com/p/<id>`。Candidate 使用 `zhihu:question:`、`zhihu:answer:`、`zhihu:article:` 命名空间，并标记 `QUESTION`、`ANSWER`、`ARTICLE` 与 `TEXT_LIST`。
+
+Adapter 依据当前页面的语义 `data-za-detail-view-path-module` 边界定位卡片，但不保存该属性或知乎的分析载荷；显式广告、用户、电子书、相关搜索、无标题和无稳定永久 URL 的结果均跳过。任务 14 再次审计确认搜索卡片没有可见话题元素；详情页虽然显示话题，但无凭据访问被拒绝，topic-only 路径不可用，官方开放平台需要 Bearer 凭据。因此生产环境明确保留标题/搜索词本地 fallback，不新增知乎 Provider、host permission、API Key，也不读取摘要、正文或登录态。知乎搜索提交当前表现为文档导航，滚动结果按批动态追加；Runtime 同时保留对 DOM 替换和同文档 URL 变化的防御性处理。
 
 ## 权限说明
 
@@ -92,8 +98,9 @@ P0 只在 `https://search.bilibili.com/*` 运行，并要求 URL 含非空 `keyw
 | --- | --- | --- |
 | `sidePanel` | 注册并展示 Side Panel；点击扩展按钮时打开面板 | 读取网页、联网或访问浏览历史 |
 | `https://search.bilibili.com/*` host permission | 仅让 content script 在批准的 Bilibili 搜索页运行并读取候选卡片 | Bilibili 其他页面、其他站点、Cookie 或网络拦截 |
-| 同一范围的 `content_scripts.matches` | 在 `document_idle` 启动真实站点 Runtime | 动态注入任意页面 |
-| 同一范围的 `web_accessible_resources` | 让经典 content script 动态导入列出的本地 ES Modules | 远程代码或任意扩展文件公开 |
+| Bilibili 同范围的 `content_scripts.matches` | 在 `document_idle` 启动 Bilibili Runtime | 动态注入任意页面 |
+| `https://www.zhihu.com/search*` `content_scripts.matches` | 只在知乎搜索路径加载入口；Adapter 拒绝用户等非内容搜索 | 知乎详情页、Cookie、请求拦截或后台联网 |
+| Bilibili 同范围及 `https://www.zhihu.com/*` 的 `web_accessible_resources` | 让各经典 content script 动态导入各自明确列出的本地 ES Modules；Chrome 对 WAR 只允许 origin 范围 | 远程代码、通配资源或向知乎详情页注入 Runtime |
 
 Manifest 没有声明 `storage`、`tabs`、`scripting`、`activeTab`、`cookies`、`webRequest` 或 `<all_urls>`。IndexedDB 位于扩展自身 origin，不需要 `storage` permission。逐项技术事实见 [权限与隐私](docs/permissions-and-privacy.md)。
 
@@ -112,7 +119,7 @@ Manifest 没有声明 `storage`、`tabs`、`scripting`、`activeTab`、`cookies`
 
 ```text
 background/   Service Worker 接线、消息路由、会话结算、评分和重逢用例
-content/      通用 Site Runtime、站点 Adapter、Candidate/Element 绑定、采集器和 Demo/Bilibili 入口
+content/      通用 Site Runtime、站点 Adapter、Candidate/Element 绑定、采集器和 Demo/Bilibili/知乎入口
 demo/         扩展内部可重复 Demo 页面
 shared/       schemaVersion=2 的领域类型、消息验证和 URL 规范化
 storage/      Repository 与 IndexedDB 适配器
@@ -123,7 +130,7 @@ docs/         架构、数据、权限隐私与人工浏览器检查
 prototype/    早期静态原型，仅作历史材料，不是当前运行时入口
 ```
 
-`manifest.json`、`background/serviceWorker.js`、`content/contentScript.js`、`sidepanel/index.html` 和 `demo/index.html` 是主要运行入口。
+`manifest.json`、`background/serviceWorker.js`、`content/contentScript.js`、`content/zhihuContentScript.js`、`sidepanel/index.html` 和 `demo/index.html` 是主要运行入口。
 
 ## 测试与构建
 
@@ -146,20 +153,20 @@ npm run build
 node --test
 ```
 
-自动测试不能替代真实 Chrome。合并或提交比赛版本前，仍需在一个干净目录按本 README 安装，并完成 [人工浏览器检查表](docs/manual-browser-checklist.md) 中三轮 Demo 和真实 Bilibili 检查。
+自动测试不能替代真实 Chrome。合并或提交比赛版本前，仍需在一个干净目录按本 README 安装，并完成 [人工浏览器检查表](docs/manual-browser-checklist.md) 中三轮 Demo、真实 Bilibili 和真实知乎检查。
 
 ## 已知限制与校准状态
 
 - 考虑度和重逢权重、阈值、时间窗、冷却与惩罚是 P0 固定启发式，尚未完成 5–10 人用户测试校准；它们可能产生误判或漏判。
 - P0 的 `noveltyOrDivergence` 是有名但固定为 0 的可解释项；没有大模型、Embedding 或隐藏回退。
 - 关键词 Jaccard 相似度只能覆盖简单文本重合，不代表语义理解。
-- 真实站点选择器依赖 Bilibili 当前 DOM，页面更新可能中断采集。
+- 真实站点选择器依赖 Bilibili/知乎当前 DOM，页面更新可能中断采集；知乎真实扩展闭环仍需在加载 unpacked extension 的 Chrome 中人工验收。
 - 本地 Demo 是确定性演示路径，不等价于真实站点性能或长期用户效果。
 - Side Panel 中重逢卡片展示会写入 24 小时冷却；删除一条 Missed Path 后，当前情境的重逢列表也会重新计算。
 
 ## 第三方与 AI 辅助声明
 
 - 运行时代码没有第三方 npm 库、远程脚本、外部 API、后端或遥测服务。
-- Bilibili 仅是当前唯一的受支持页面环境；扩展不调用 Bilibili API，也不上传采集数据。
+- Bilibili 与知乎是当前受支持的真实搜索页面环境；扩展不调用平台 API，也不上传采集数据。
 - 开发过程中使用了 AI 编程助手辅助部分代码与文档生成/审查；团队仍需对提交内容、测试结果和演示表述负责。扩展运行时不调用 AI。
 - 发布压缩包、Git tag、提交和推送必须由团队确认后执行；本步骤只冻结源码、文档和校验入口。

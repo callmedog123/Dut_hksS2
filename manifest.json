@@ -8,7 +8,8 @@
     "sidePanel"
   ],
   "host_permissions": [
-    "https://search.bilibili.com/*"
+    "https://search.bilibili.com/*",
+    "https://www.douyin.com/*"
   ],
   "content_scripts": [
     {
@@ -17,6 +18,24 @@
       ],
       "js": [
         "content/contentScript.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.zhihu.com/search*"
+      ],
+      "js": [
+        "content/zhihuContentScript.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.douyin.com/search/*"
+      ],
+      "js": [
+        "content/douyinContentScript.js"
       ],
       "run_at": "document_idle"
     }
@@ -37,6 +56,40 @@
       ],
       "matches": [
         "https://search.bilibili.com/*"
+      ]
+    },
+    {
+      "resources": [
+        "content/zhihuRuntime.js",
+        "content/siteRuntime.js",
+        "content/adapters/zhihuSearchAdapter.js",
+        "content/candidateBinding.js",
+        "content/eventCollector/click.js",
+        "content/eventCollector/hover.js",
+        "content/visibility.js",
+        "shared/messages.js",
+        "shared/types.js",
+        "shared/url.js"
+      ],
+      "matches": [
+        "https://www.zhihu.com/*"
+      ]
+    },
+    {
+      "resources": [
+        "content/douyinRuntime.js",
+        "content/siteRuntime.js",
+        "content/adapters/douyinSearchAdapter.js",
+        "content/candidateBinding.js",
+        "content/eventCollector/click.js",
+        "content/eventCollector/hover.js",
+        "content/visibility.js",
+        "shared/messages.js",
+        "shared/types.js",
+        "shared/url.js"
+      ],
+      "matches": [
+        "https://www.douyin.com/*"
       ]
     }
   ],

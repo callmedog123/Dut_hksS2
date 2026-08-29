@@ -345,6 +345,104 @@ test("no provider still persists a local fallback profile", async () => {
   assert.ok(result.profile.normalizedTags.includes("cognitive"));
 });
 
+test("Zhihu QUESTION, ANSWER and ARTICLE use one durable local TagProfile fallback", async () => {
+  const owner = createOwner(18, "zhihu-doc");
+  const adapter = createTransactionalMemoryStorageAdapter();
+  const repository = createRepository(adapter);
+  const candidates = [
+    {
+      id: "zhihu:question:101",
+      url: "https://www.zhihu.com/question/101",
+      title: "量子计算 基础问题",
+      source: "zhihu-search",
+      rank: 1,
+      sessionId: SESSION_ID,
+      contentType: "QUESTION",
+      layoutType: "TEXT_LIST"
+    },
+    {
+      id: "zhihu:answer:202",
+      url: "https://www.zhihu.com/question/101/answer/202",
+      title: "量子计算 回答",
+      source: "zhihu-search",
+      rank: 2,
+      sessionId: SESSION_ID,
+      contentType: "ANSWER",
+      layoutType: "TEXT_LIST"
+    },
+    {
+      id: "zhihu:article:303",
+      url: "https://zhuanlan.zhihu.com/p/303",
+      title: "量子信息 专栏文章",
+      source: "zhihu-search",
+      rank: 3,
+      sessionId: SESSION_ID,
+      contentType: "ARTICLE",
+      layoutType: "TEXT_LIST"
+    }
+  ];
+  await repository.mergeDiscoveredCandidates(
+    {
+      sessionId: SESSION_ID,
+      context: {
+        query: "量子计算",
+        source: "zhihu-search",
+        timestamp: 1_000,
+        keywords: ["量子计算"]
+      },
+      candidates,
+      discoveredAt: 1_000
+    },
+    owner
+  );
+  const coordinator = createTagEnrichmentCoordinator(repository, null);
+
+  const results = [];
+  for (const candidate of candidates) {
+    const signals = {
+      ...createSignals({ returnCount: 1 }),
+      candidateId: candidate.id
+    };
+    await repository.mergeCandidateSignalsSnapshot(
+      { signals, updatedAt: 1_500 },
+      owner
+    );
+    results.push(
+      await coordinator.enrichCandidate({ candidate, signals }, owner)
+    );
+  }
+
+  assert.deepEqual(
+    results.map(({ eligible, source, profile }) => ({
+      eligible,
+      source,
+      candidateId: profile.candidateId,
+      nativeTags: profile.nativeTags
+    })),
+    candidates.map((candidate) => ({
+      eligible: true,
+      source: TAG_SOURCES.LOCAL_FALLBACK,
+      candidateId: candidate.id,
+      nativeTags: []
+    }))
+  );
+  assert.equal(
+    (await repository.listCandidateTagProfiles(SESSION_ID, owner)).length,
+    3
+  );
+  for (const { profile } of results) {
+    assert.ok(profile.normalizedTags.length > 0);
+  }
+
+  const restartedRepository = createRepository(adapter);
+  assert.equal(
+    (await restartedRepository.listCandidateTagProfiles(SESSION_ID, owner))
+      .length,
+    3,
+    "a Worker restart must retain every fallback TagProfile"
+  );
+});
+
 test("several clicked Candidates raise the weight of a shared tag", async () => {
   const owner = createOwner();
   const entries = [

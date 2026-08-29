@@ -9,16 +9,17 @@ The Unclicked 是 local-first 扩展。业务数据只写入扩展自身 origin 
 | 声明 | 必要性 | 代码证据/边界 |
 | --- | --- | --- |
 | `permissions: ["sidePanel"]` | 提供 Side Panel，并在点击扩展 action 时打开 | `background/serviceWorker.js` 调用 `chrome.sidePanel.setPanelBehavior`；不授予网页读取权限 |
-| `host_permissions: ["https://search.bilibili.com/*"]` | 唯一批准的真实站点范围 | 只覆盖 Bilibili 搜索 hostname；没有 `www.bilibili.com` host permission、第二站点或 `<all_urls>` |
-| `content_scripts.matches: ["https://search.bilibili.com/*"]` | 在匹配搜索页的 `document_idle` 启动 content script | 只有一个 entry，入口为 `content/contentScript.js` |
-| 相同 matches 的 `web_accessible_resources` | 允许 content script 动态导入明确列出的本地 ES Modules | 资源列表和匹配域被构建校验精确锁定，不允许远程代码 |
+| `host_permissions: ["https://search.bilibili.com/*"]` | 唯一显式 host permission | 只覆盖 Bilibili 搜索 hostname；没有知乎 host permission、`www.bilibili.com` 或 `<all_urls>` |
+| Bilibili `content_scripts.matches: ["https://search.bilibili.com/*"]` | 在 Bilibili 搜索页的 `document_idle` 启动入口 | 入口为 `content/contentScript.js` |
+| 知乎 `content_scripts.matches: ["https://www.zhihu.com/search*"]` | 在知乎搜索路径启动入口；Adapter 只接受内容搜索 | 不在问题、回答、文章详情页运行；不授予后台 fetch/Cookie 权限 |
+| Bilibili 同范围与知乎 `https://www.zhihu.com/*` 的 `web_accessible_resources` | 允许各入口动态导入明确列出的本地 ES Modules | 知乎 WAR 按 Chrome 规则只能限定到 origin，但不会令 Content Script 在其他路径运行；不允许远程代码或资源通配 |
 
 没有声明：
 
 - `storage`：Repository 使用扩展 origin 的 IndexedDB，不使用 `chrome.storage`；
 - `tabs`、`activeTab`、`scripting`：不枚举标签页或向任意页面注入；
 - `cookies`、`webRequest`：不读取身份状态或拦截流量；
-- 通配 host、可选 host 或第二个真实站点权限。
+- 通配 host、可选 host 或知乎 host permission。
 
 ## 保存什么
 
@@ -39,7 +40,7 @@ P0 不采集或持久化：
 
 - 键盘事件、用户输入过程、表单字段或密码；
 - Cookie、Token、登录态或请求头；
-- 完整网页正文、评论、弹幕、视频内容、截图；
+- 完整网页正文、回答/文章摘要或正文、评论、弹幕、视频内容、截图；
 - 指针坐标、逐点鼠标轨迹或原始高频事件日志；
 - DOM Element 或可序列化的页面节点；
 - 设备指纹、账号资料或跨站浏览历史。
@@ -66,14 +67,15 @@ P0 不采集或持久化：
 
 - 当前 P0 没有账号或跨设备同步，也没有自动上传路径。
 - 当前 P0 没有按天自动过期；记录保留到用户删除、清空或浏览器清理扩展数据。
-- Bilibili 页面本身的网络行为由网站负责；The Unclicked 不把 Repository 数据发送给 Bilibili。
+- Bilibili/知乎页面本身的网络行为由网站负责；The Unclicked 不把 Repository 数据发送给平台。
+- 知乎任务 14 未增加网络 Provider：搜索卡片无可见话题，详情页话题来源需要整页访问或登录/Bearer 凭据，因此只保存标题/搜索词派生的本地 TagProfile。
 - 点击“打开”会导航到已有候选 URL，这是用户操作，不是后台数据上传。
 
 ## 发布前隐私检查
 
 每次比赛提交候选版本应确认：
 
-1. Manifest 仍只有 `sidePanel` 和 `https://search.bilibili.com/*`。
+1. Manifest 仍只有 `sidePanel`、唯一 Bilibili host permission、精确 Bilibili/知乎搜索入口和对应受限 WAR；没有知乎 host permission 或 `<all_urls>`。
 2. 没有 `.env`、密钥、Token、个人路径、抓包/日志或真实个人数据进入仓库。
 3. 运行 `npm run build`，使发布静态校验扫描文本文件、环境文件名和调试/压缩产物。
 4. 对二进制 Word/图片材料另做元数据与正文检查；文本扫描不能证明压缩文档内部无个人元数据。

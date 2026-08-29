@@ -102,10 +102,12 @@ const sessionFinalizeUseCase = createSessionFinalizeUseCase({
 let tagEnrichmentCoordinator;
 function getTagEnrichmentCoordinator() {
   if (tagEnrichmentCoordinator === undefined) {
-    // Task 9 audit confirmed that Bilibili search cards expose no stable,
-    // visible native video tags. The real runtime still uses Task 8's
-    // coordinator to persist local title/query fallback profiles; a network
-    // provider can only be added after a separate explicit approval.
+    // Task 9/14 audits confirmed that the approved Bilibili and Zhihu search
+    // cards expose no stable, visible native tags. Zhihu detail-page topics
+    // require either whole-page access or authenticated/credentialed data,
+    // which is outside the frozen privacy boundary. Keep the production
+    // provider null so Task 8 persists title/query fallback profiles without
+    // adding network access, permissions or login-state coupling.
     tagEnrichmentCoordinator = createTagEnrichmentCoordinator(
       getRepository(),
       null

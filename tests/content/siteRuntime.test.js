@@ -489,12 +489,12 @@ test("Site Runtime drops native tags for Candidates outside the accepted batch",
   runtime.cleanup();
 });
 
-test("Site Runtime source contains no Bilibili Adapter, URL, or selector", () => {
+test("Site Runtime source contains no site Adapter, URL, or selector", () => {
   const source = readFileSync("content/siteRuntime.js", "utf8");
 
   assert.doesNotMatch(
     source,
-    /bilibiliSearchAdapter|search\.bilibili\.com|bili-video-card/iu
+    /bilibiliSearchAdapter|search\.bilibili\.com|bili-video-card|zhihuSearchAdapter|www\.zhihu\.com|ContentItem-title/iu
   );
   assert.match(source, /options\.createAdapter/u);
 });

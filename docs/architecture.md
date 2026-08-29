@@ -6,7 +6,7 @@
 
 ```mermaid
 sequenceDiagram
-  participant Page as Demo / Bilibili 搜索页
+  participant Page as Demo / Bilibili / 知乎搜索页
   participant Adapter as Site Adapter
   participant Runtime as Content Runtime
   participant Worker as Service Worker
@@ -30,11 +30,12 @@ sequenceDiagram
 
 ## 运行入口
 
-- `manifest.json`：冻结最低 Chrome 版本、唯一权限、Bilibili content script 和受限的 web-accessible module 图。
+- `manifest.json`：冻结最低 Chrome 版本、最小权限、Bilibili/知乎 content script 和受限的 web-accessible module 图。
 - `background/serviceWorker.js`：Side Panel 行为、消息入口、Repository 与业务用例装配。
 - `content/contentScript.js`：经典 content script 入口，只动态加载本地 `content/bilibiliRuntime.js`。
 - `content/siteRuntime.js`：站点无关的真实页面会话生命周期、Candidate/Element binding、采集器、SPA 边界和结算编排；只依赖注入的 Site Adapter 接口。
 - `content/bilibiliRuntime.js`：Bilibili 薄包装，负责创建 Bilibili Adapter 并注入通用 Site Runtime，同时保留原有兼容导出。
+- `content/zhihuContentScript.js` + `content/zhihuRuntime.js`：批准的知乎搜索入口与薄包装，复用相同 Site Runtime 和 collectors。
 - `demo/app.js` + `content/demoRuntime.js`：扩展内部 Demo 的确定性闭环。
 - `sidepanel/index.html` + `sidepanel/app.js`：本地记录、情境化重逢、反馈和数据控制 UI。
 
@@ -73,6 +74,12 @@ Runtime 支持：
 - Worker 休眠/重启后从 Repository 恢复，不依赖 Worker 内存保存业务状态；
 - 暂停状态、选择器失效、离开支持范围时安全停止或拒绝写入。
 
+### 知乎搜索页
+
+Content Script 匹配 `https://www.zhihu.com/search*`，Adapter 再要求 `/search`、非空 `q` 和 `type=content`（或缺省）。`AnswerItem`、`PostItem` 和问题类 `Content` 只作为 DOM 定位边界；业务身份只取标题链接中的数字 ID，并重建无跟踪参数的永久 URL。问题、回答和文章分别生成 `zhihu:question:<id>`、`zhihu:answer:<id>`、`zhihu:article:<id>`，统一使用 `zhihu-search`、对应 contentType 和 `TEXT_LIST`。
+
+广告标记、用户、电子书、相关搜索、摘要正文和无稳定 URL 的异常卡片不会进入 Candidate。任务 14 的真实审计未发现三类搜索卡片中存在可见话题元素；QUESTION/ANSWER/ARTICLE 详情页虽有 `TopicLink`，但无凭据请求返回 403，候选级 topic-only 路径返回 404，官方开放平台需要 Bearer 凭据。为避免整页抓取、登录态和密钥依赖，生产 TagProvider 继续为 `null`，统一由任务 8 Coordinator 按门槛持久化标题/搜索词 fallback。无限滚动动态追加由 MutationObserver 接入；节点替换通过 Candidate binding identity 同步；搜索文档导航由卸载/恢复路径结算。
+
 ## 持久化与恢复
 
 Repository 使用扩展 origin 下的 IndexedDB 数据库和单一 `repository-records` 对象仓库。每条记录有 `schemaVersion: 2` 包装；合法 v1 记录会在首次 Repository 访问时通过一次存储事务原子、幂等升级，未知版本或无元数据的非空库明确报错。
@@ -94,6 +101,6 @@ Side Panel 用 `textContent` 写入业务文本，并在打开 URL 前进行 HTT
 ## 设计上的已知限制
 
 - Service Worker 与页面生命周期事件存在浏览器时序差异，自动测试不能替代真实 Chrome。
-- Bilibili DOM 类名更新需要只在 Adapter 内调整并重新验证。
+- Bilibili/知乎 DOM 结构更新需要只在对应 Adapter 内调整并重新验证。
 - P0 固定启发式和关键词匹配尚未通过目标用户样本校准。
 - Demo fixture 证明的是代码闭环，不证明真实站点覆盖率或用户价值。

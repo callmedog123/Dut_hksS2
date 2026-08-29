@@ -6,11 +6,11 @@ const manifestPath = path.join(root, "manifest.json");
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 const failures = [];
 const BILIBILI_MATCH = "https://search.bilibili.com/*";
-const CONTENT_SCRIPT_ENTRY = "content/contentScript.js";
-const CONTENT_MODULE_RESOURCES = [
-  "content/bilibiliRuntime.js",
-  "content/siteRuntime.js",
-  "content/adapters/bilibiliSearchAdapter.js",
+const ZHIHU_CONTENT_MATCH = "https://www.zhihu.com/search*";
+const ZHIHU_RESOURCE_MATCH = "https://www.zhihu.com/*";
+const BILIBILI_CONTENT_SCRIPT_ENTRY = "content/contentScript.js";
+const ZHIHU_CONTENT_SCRIPT_ENTRY = "content/zhihuContentScript.js";
+const SHARED_CONTENT_MODULE_RESOURCES = [
   "content/candidateBinding.js",
   "content/eventCollector/click.js",
   "content/eventCollector/hover.js",
@@ -18,6 +18,18 @@ const CONTENT_MODULE_RESOURCES = [
   "shared/messages.js",
   "shared/types.js",
   "shared/url.js"
+];
+const BILIBILI_CONTENT_MODULE_RESOURCES = [
+  "content/bilibiliRuntime.js",
+  "content/siteRuntime.js",
+  "content/adapters/bilibiliSearchAdapter.js",
+  ...SHARED_CONTENT_MODULE_RESOURCES
+];
+const ZHIHU_CONTENT_MODULE_RESOURCES = [
+  "content/zhihuRuntime.js",
+  "content/siteRuntime.js",
+  "content/adapters/zhihuSearchAdapter.js",
+  ...SHARED_CONTENT_MODULE_RESOURCES
 ];
 
 function check(condition, message) {
@@ -46,21 +58,30 @@ check(
     JSON.stringify([
       {
         matches: [BILIBILI_MATCH],
-        js: [CONTENT_SCRIPT_ENTRY],
+        js: [BILIBILI_CONTENT_SCRIPT_ENTRY],
+        run_at: "document_idle"
+      },
+      {
+        matches: [ZHIHU_CONTENT_MATCH],
+        js: [ZHIHU_CONTENT_SCRIPT_ENTRY],
         run_at: "document_idle"
       }
     ]),
-  "content_scripts must contain one exact Bilibili isolated entry"
+  "content_scripts must contain exact Bilibili and approved Zhihu search entries"
 );
 check(
   JSON.stringify(manifest.web_accessible_resources) ===
     JSON.stringify([
       {
-        resources: CONTENT_MODULE_RESOURCES,
+        resources: BILIBILI_CONTENT_MODULE_RESOURCES,
         matches: [BILIBILI_MATCH]
+      },
+      {
+        resources: ZHIHU_CONTENT_MODULE_RESOURCES,
+        matches: [ZHIHU_RESOURCE_MATCH]
       }
     ]),
-  "web_accessible_resources must expose only the required Bilibili modules"
+  "web_accessible_resources must expose only approved site runtime modules"
 );
 
 const declaredPatterns = [
@@ -72,8 +93,10 @@ const declaredPatterns = [
   )
 ];
 check(
-  declaredPatterns.every((pattern) => pattern === BILIBILI_MATCH),
-  "all declared URL patterns must be the exact approved Bilibili search match"
+  declaredPatterns.every((pattern) =>
+    [BILIBILI_MATCH, ZHIHU_CONTENT_MATCH, ZHIHU_RESOURCE_MATCH].includes(pattern)
+  ),
+  "all declared URL patterns must remain within approved Bilibili/Zhihu scopes"
 );
 
 const requiredPaths = [
@@ -81,14 +104,16 @@ const requiredPaths = [
   manifest.side_panel?.default_path,
   "shared/messages.js",
   "content/demoRuntime.js",
-  CONTENT_SCRIPT_ENTRY,
-  ...CONTENT_MODULE_RESOURCES,
+  BILIBILI_CONTENT_SCRIPT_ENTRY,
+  ZHIHU_CONTENT_SCRIPT_ENTRY,
+  ...BILIBILI_CONTENT_MODULE_RESOURCES,
+  ...ZHIHU_CONTENT_MODULE_RESOURCES,
   "sidepanel/app.js",
   "demo/index.html",
   "demo/app.js"
 ];
 
-const contentEntryPath = path.join(root, CONTENT_SCRIPT_ENTRY);
+const contentEntryPath = path.join(root, BILIBILI_CONTENT_SCRIPT_ENTRY);
 if (fs.existsSync(contentEntryPath)) {
   const contentEntry = fs.readFileSync(contentEntryPath, "utf8");
   check(
@@ -98,6 +123,17 @@ if (fs.existsSync(contentEntryPath)) {
       contentEntry.includes("import(runtimeModuleUrl)") &&
       contentEntry.includes("startBilibiliRuntime"),
     "content script entry must load and start the Bilibili ES Module Runtime"
+  );
+}
+
+const zhihuContentEntryPath = path.join(root, ZHIHU_CONTENT_SCRIPT_ENTRY);
+if (fs.existsSync(zhihuContentEntryPath)) {
+  const contentEntry = fs.readFileSync(zhihuContentEntryPath, "utf8");
+  check(
+    contentEntry.includes('chrome.runtime.getURL("content/zhihuRuntime.js")') &&
+      contentEntry.includes("import(runtimeModuleUrl)") &&
+      contentEntry.includes("startZhihuRuntime"),
+    "Zhihu content script entry must load the approved ES Module Runtime"
   );
 }
 
@@ -123,6 +159,28 @@ if (fs.existsSync(bilibiliRuntimePath)) {
   );
 }
 
+const zhihuRuntimePath = path.join(root, "content/zhihuRuntime.js");
+if (fs.existsSync(zhihuRuntimePath)) {
+  const runtimeSource = fs.readFileSync(zhihuRuntimePath, "utf8");
+  for (const requiredImport of [
+    "./adapters/zhihuSearchAdapter.js",
+    "./siteRuntime.js"
+  ]) {
+    check(
+      runtimeSource.includes(requiredImport),
+      `Zhihu Runtime must reuse ${requiredImport}`
+    );
+  }
+  check(
+    !/\.\/eventCollector\/|\.\/visibility\.js/u.test(runtimeSource),
+    "Zhihu Runtime must delegate collectors to the shared Site Runtime"
+  );
+  check(
+    !/localStorage|indexedDB|chrome\.storage/iu.test(runtimeSource),
+    "Zhihu Runtime must not access browser storage directly"
+  );
+}
+
 const siteRuntimePath = path.join(root, "content/siteRuntime.js");
 if (fs.existsSync(siteRuntimePath)) {
   const runtimeSource = fs.readFileSync(siteRuntimePath, "utf8");
@@ -141,10 +199,10 @@ if (fs.existsSync(siteRuntimePath)) {
     "Site Runtime must receive its Site Adapter through the shared interface"
   );
   check(
-    !/bilibiliSearchAdapter|search\.bilibili\.com|bili-video-card/iu.test(
+    !/bilibiliSearchAdapter|search\.bilibili\.com|bili-video-card|zhihuSearchAdapter|www\.zhihu\.com|ContentItem-title/iu.test(
       runtimeSource
     ),
-    "Site Runtime must not contain Bilibili imports, URLs, or selectors"
+    "Site Runtime must not contain site Adapter imports, URLs, or selectors"
   );
   check(
     !/localStorage|indexedDB|chrome\.storage/iu.test(runtimeSource),

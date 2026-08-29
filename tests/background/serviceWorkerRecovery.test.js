@@ -299,6 +299,80 @@ test("browser startup recovers a stale OPEN Session once", async () => {
   }
 });
 
+test("browser startup recovers a stale Zhihu Session with its typed Candidate", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+  const staleAt = Date.now() - SESSION_RECOVERY_CONFIG.recoveryWindowMs - 1_000;
+  const owner = {
+    tabId: 31,
+    documentId: "zhihu-recovery-document",
+    frameId: 0,
+    sessionId: "zhihu-recovery-session"
+  };
+  const candidate = createCandidate({
+    id: "zhihu:answer:456",
+    url: "https://www.zhihu.com/question/123/answer/456",
+    title: "Recovered answer title",
+    source: "zhihu-search",
+    rank: 1,
+    sessionId: owner.sessionId,
+    contentType: "ANSWER",
+    layoutType: "TEXT_LIST"
+  });
+  const context = {
+    query: "robot navigation",
+    source: "zhihu-search",
+    timestamp: staleAt,
+    keywords: ["robot", "navigation"]
+  };
+  const repository = createRepository(
+    createIndexedDbStorageAdapter({ indexedDB })
+  );
+  await repository.mergeDiscoveredCandidates(
+    {
+      sessionId: owner.sessionId,
+      context,
+      candidates: [candidate],
+      discoveredAt: staleAt
+    },
+    owner
+  );
+  await repository.mergeCandidateSignalsSnapshot(
+    {
+      signals: {
+        candidateId: candidate.id,
+        sessionId: owner.sessionId,
+        visibleMs: 10_000,
+        hoverMs: 3_000,
+        hoverCount: 4,
+        returnCount: 2,
+        clicked: false
+      },
+      updatedAt: staleAt + 1
+    },
+    owner
+  );
+
+  try {
+    const worker = await loadServiceWorker("zhihu-startup-recovery", owner.tabId);
+    await worker.startupListener();
+    const restartedRepository = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    assert.equal(
+      (await restartedRepository.getSession(owner.sessionId, owner)).status,
+      SESSION_LIFECYCLE_STATUSES.FINALIZED
+    );
+    const [missedPath] = await restartedRepository.listMissedPaths();
+    assert.equal(missedPath.candidate.id, "zhihu:answer:456");
+    assert.equal(missedPath.candidate.contentType, "ANSWER");
+    assert.equal(missedPath.candidate.layoutType, "TEXT_LIST");
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
 test("ordinary Worker wake scans stale OPEN and preserves an exact live document", async () => {
   const indexedDB = createFakeIndexedDB();
   globalThis.indexedDB = indexedDB;
@@ -1281,6 +1355,115 @@ test("DATA_DELETE_ALL stays empty after restart and preserves Settings", async (
       thresholds: { consideration: 0.55, reencounter: 0.6 },
       demoMode: false
     });
+  } finally {
+    delete globalThis.chrome;
+    delete globalThis.indexedDB;
+  }
+});
+
+test("two Zhihu tabs keep same-named Sessions owner-isolated through finalize", async () => {
+  const indexedDB = createFakeIndexedDB();
+  globalThis.indexedDB = indexedDB;
+  const sessionId = "zhihu-shared-session";
+  const senderA = {
+    url: "https://www.zhihu.com/search?type=content&q=robot",
+    tab: { id: 71 },
+    documentId: "zhihu-document-a",
+    frameId: 0
+  };
+  const senderB = {
+    url: "https://www.zhihu.com/search?type=content&q=vision",
+    tab: { id: 72 },
+    documentId: "zhihu-document-b",
+    frameId: 0
+  };
+  const candidateA = createCandidate({
+    id: "zhihu:question:101",
+    url: "https://www.zhihu.com/question/101",
+    title: "Question A",
+    source: "zhihu-search",
+    sessionId,
+    contentType: "QUESTION",
+    layoutType: "TEXT_LIST"
+  });
+  const candidateB = createCandidate({
+    id: "zhihu:article:202",
+    url: "https://zhuanlan.zhihu.com/p/202",
+    title: "Article B",
+    source: "zhihu-search",
+    sessionId,
+    contentType: "ARTICLE",
+    layoutType: "TEXT_LIST"
+  });
+
+  try {
+    const worker = await loadServiceWorker("zhihu-two-tabs", senderA.tab.id);
+    for (const [sender, candidate, query, requestSuffix] of [
+      [senderA, candidateA, "robot", "a"],
+      [senderB, candidateB, "vision", "b"]
+    ]) {
+      const discovered = await dispatchAsync(
+        worker,
+        createCandidatesDiscoveredMessage(
+          sessionId,
+          {
+            query,
+            source: "zhihu-search",
+            timestamp: 100,
+            keywords: [query]
+          },
+          [candidate],
+          200,
+          `request-zhihu-discovery-${requestSuffix}`
+        ),
+        sender
+      );
+      assert.equal(discovered.ok, true);
+      const signals = await dispatchAsync(
+        worker,
+        createSignalsUpdatedMessage(
+          {
+            candidateId: candidate.id,
+            sessionId,
+            visibleMs: 10_000,
+            hoverMs: 3_000,
+            hoverCount: 4,
+            returnCount: 2,
+            clicked: sender === senderB
+          },
+          300,
+          `request-zhihu-signals-${requestSuffix}`
+        ),
+        sender
+      );
+      assert.equal(signals.ok, true);
+    }
+
+    for (const [sender, suffix] of [[senderA, "a"], [senderB, "b"]]) {
+      const finalized = await dispatchAsync(
+        worker,
+        createSessionFinalizeMessage(
+          sessionId,
+          400,
+          `request-zhihu-finalize-${suffix}`
+        ),
+        sender
+      );
+      assert.equal(finalized.ok, true);
+    }
+
+    const repository = createRepository(
+      createIndexedDbStorageAdapter({ indexedDB })
+    );
+    assert.equal((await repository.listSessions()).length, 2);
+    assert.deepEqual(
+      (await repository.listMissedPaths()).map((entry) => entry.candidate.id),
+      ["zhihu:question:101"]
+    );
+    assert.deepEqual(
+      (await repository.listChosen()).map((entry) => entry.candidate.id),
+      ["zhihu:article:202"]
+    );
   } finally {
     delete globalThis.chrome;
     delete globalThis.indexedDB;
