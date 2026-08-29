@@ -8,8 +8,11 @@ const failures = [];
 const BILIBILI_MATCH = "https://search.bilibili.com/*";
 const ZHIHU_CONTENT_MATCH = "https://www.zhihu.com/search*";
 const ZHIHU_RESOURCE_MATCH = "https://www.zhihu.com/*";
+const DOUYIN_CONTENT_MATCH = "https://www.douyin.com/search/*";
+const DOUYIN_RESOURCE_MATCH = "https://www.douyin.com/*";
 const BILIBILI_CONTENT_SCRIPT_ENTRY = "content/contentScript.js";
 const ZHIHU_CONTENT_SCRIPT_ENTRY = "content/zhihuContentScript.js";
+const DOUYIN_CONTENT_SCRIPT_ENTRY = "content/douyinContentScript.js";
 const SHARED_CONTENT_MODULE_RESOURCES = [
   "content/candidateBinding.js",
   "content/eventCollector/click.js",
@@ -29,6 +32,12 @@ const ZHIHU_CONTENT_MODULE_RESOURCES = [
   "content/zhihuRuntime.js",
   "content/siteRuntime.js",
   "content/adapters/zhihuSearchAdapter.js",
+  ...SHARED_CONTENT_MODULE_RESOURCES
+];
+const DOUYIN_CONTENT_MODULE_RESOURCES = [
+  "content/douyinRuntime.js",
+  "content/siteRuntime.js",
+  "content/adapters/douyinSearchAdapter.js",
   ...SHARED_CONTENT_MODULE_RESOURCES
 ];
 
@@ -65,9 +74,14 @@ check(
         matches: [ZHIHU_CONTENT_MATCH],
         js: [ZHIHU_CONTENT_SCRIPT_ENTRY],
         run_at: "document_idle"
+      },
+      {
+        matches: [DOUYIN_CONTENT_MATCH],
+        js: [DOUYIN_CONTENT_SCRIPT_ENTRY],
+        run_at: "document_idle"
       }
     ]),
-  "content_scripts must contain exact Bilibili and approved Zhihu search entries"
+  "content_scripts must contain exact approved Bilibili, Zhihu, and Douyin search entries"
 );
 check(
   JSON.stringify(manifest.web_accessible_resources) ===
@@ -79,6 +93,10 @@ check(
       {
         resources: ZHIHU_CONTENT_MODULE_RESOURCES,
         matches: [ZHIHU_RESOURCE_MATCH]
+      },
+      {
+        resources: DOUYIN_CONTENT_MODULE_RESOURCES,
+        matches: [DOUYIN_RESOURCE_MATCH]
       }
     ]),
   "web_accessible_resources must expose only approved site runtime modules"
@@ -94,9 +112,15 @@ const declaredPatterns = [
 ];
 check(
   declaredPatterns.every((pattern) =>
-    [BILIBILI_MATCH, ZHIHU_CONTENT_MATCH, ZHIHU_RESOURCE_MATCH].includes(pattern)
+    [
+      BILIBILI_MATCH,
+      ZHIHU_CONTENT_MATCH,
+      ZHIHU_RESOURCE_MATCH,
+      DOUYIN_CONTENT_MATCH,
+      DOUYIN_RESOURCE_MATCH
+    ].includes(pattern)
   ),
-  "all declared URL patterns must remain within approved Bilibili/Zhihu scopes"
+  "all declared URL patterns must remain within approved Bilibili/Zhihu/Douyin scopes"
 );
 
 const requiredPaths = [
@@ -106,8 +130,10 @@ const requiredPaths = [
   "content/demoRuntime.js",
   BILIBILI_CONTENT_SCRIPT_ENTRY,
   ZHIHU_CONTENT_SCRIPT_ENTRY,
+  DOUYIN_CONTENT_SCRIPT_ENTRY,
   ...BILIBILI_CONTENT_MODULE_RESOURCES,
   ...ZHIHU_CONTENT_MODULE_RESOURCES,
+  ...DOUYIN_CONTENT_MODULE_RESOURCES,
   "sidepanel/app.js",
   "demo/index.html",
   "demo/app.js"
@@ -123,6 +149,17 @@ if (fs.existsSync(contentEntryPath)) {
       contentEntry.includes("import(runtimeModuleUrl)") &&
       contentEntry.includes("startBilibiliRuntime"),
     "content script entry must load and start the Bilibili ES Module Runtime"
+  );
+}
+
+const douyinContentEntryPath = path.join(root, DOUYIN_CONTENT_SCRIPT_ENTRY);
+if (fs.existsSync(douyinContentEntryPath)) {
+  const contentEntry = fs.readFileSync(douyinContentEntryPath, "utf8");
+  check(
+    contentEntry.includes('chrome.runtime.getURL("content/douyinRuntime.js")') &&
+      contentEntry.includes("import(runtimeModuleUrl)") &&
+      contentEntry.includes("startDouyinRuntime"),
+    "Douyin content script entry must load the approved ES Module Runtime"
   );
 }
 
@@ -181,6 +218,28 @@ if (fs.existsSync(zhihuRuntimePath)) {
   );
 }
 
+const douyinRuntimePath = path.join(root, "content/douyinRuntime.js");
+if (fs.existsSync(douyinRuntimePath)) {
+  const runtimeSource = fs.readFileSync(douyinRuntimePath, "utf8");
+  for (const requiredImport of [
+    "./adapters/douyinSearchAdapter.js",
+    "./siteRuntime.js"
+  ]) {
+    check(
+      runtimeSource.includes(requiredImport),
+      `Douyin Runtime must reuse ${requiredImport}`
+    );
+  }
+  check(
+    !/\.\/eventCollector\/|\.\/visibility\.js/u.test(runtimeSource),
+    "Douyin Runtime must delegate collectors to the shared Site Runtime"
+  );
+  check(
+    !/localStorage|indexedDB|chrome\.storage/iu.test(runtimeSource),
+    "Douyin Runtime must not access browser storage directly"
+  );
+}
+
 const siteRuntimePath = path.join(root, "content/siteRuntime.js");
 if (fs.existsSync(siteRuntimePath)) {
   const runtimeSource = fs.readFileSync(siteRuntimePath, "utf8");
@@ -199,7 +258,7 @@ if (fs.existsSync(siteRuntimePath)) {
     "Site Runtime must receive its Site Adapter through the shared interface"
   );
   check(
-    !/bilibiliSearchAdapter|search\.bilibili\.com|bili-video-card|zhihuSearchAdapter|www\.zhihu\.com|ContentItem-title/iu.test(
+    !/bilibiliSearchAdapter|search\.bilibili\.com|bili-video-card|zhihuSearchAdapter|www\.zhihu\.com|ContentItem-title|douyinSearchAdapter|www\.douyin\.com|waterfall_item_/iu.test(
       runtimeSource
     ),
     "Site Runtime must not contain site Adapter imports, URLs, or selectors"

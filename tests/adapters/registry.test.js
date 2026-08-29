@@ -8,6 +8,7 @@ import {
 } from "../../content/adapters/registry.js";
 import { createBilibiliDocumentFixture } from "./fixtures/bilibiliDom.js";
 import { createZhihuDocumentFixture } from "./fixtures/zhihuDom.js";
+import { createDouyinSearchDom } from "./fixtures/douyinDom.js";
 
 const testUrl = new URL("https://example.invalid/search?q=robotics");
 const testDocument = {};
@@ -95,9 +96,10 @@ test("returns an idempotent observer cleanup", () => {
   assert.equal(cleanupCount, 1);
 });
 
-test("real-site registry matches only approved Bilibili and Zhihu searches", () => {
+test("real-site registry matches only approved Bilibili, Zhihu, and Douyin searches", () => {
   const fixture = createBilibiliDocumentFixture();
   const zhihuFixture = createZhihuDocumentFixture();
+  const douyinDocument = createDouyinSearchDom();
   const registry = createRealSiteAdapterRegistry({
     document: fixture.document,
     sessionIdFactory: () => "registry-session"
@@ -114,6 +116,20 @@ test("real-site registry matches only approved Bilibili and Zhihu searches", () 
     registry.resolve(
       new URL("https://search.bilibili.com/all"),
       fixture.document
+    ),
+    null
+  );
+  assert.notEqual(
+    registry.resolve(
+      new URL("https://www.douyin.com/search/robotics"),
+      douyinDocument
+    ),
+    null
+  );
+  assert.equal(
+    registry.resolve(
+      new URL("https://www.douyin.com/search/robotics?type=user"),
+      douyinDocument
     ),
     null
   );

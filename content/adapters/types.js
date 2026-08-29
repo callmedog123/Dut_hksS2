@@ -20,6 +20,7 @@
  * @property {(url: URL, document: Document) => boolean} canHandle
  * @property {(document: Document, url: URL) => SearchContext} getContext
  * @property {(document: Document) => Candidate[]} extractCandidates
+ * @property {(document: Document) => import("../../shared/types.js").CandidateNativeTagsV1[]} [extractCandidateTags]
  * @property {(onCandidatesChanged: () => void) => (() => void)} observeChanges
  */
 

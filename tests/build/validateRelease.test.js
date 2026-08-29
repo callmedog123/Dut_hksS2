@@ -12,6 +12,7 @@ import { validateRelease } from "../../scripts/validate-release.js";
 
 const BILIBILI_MATCH = "https://search.bilibili.com/*";
 const ZHIHU_CONTENT_MATCH = "https://www.zhihu.com/search*";
+const DOUYIN_CONTENT_MATCH = "https://www.douyin.com/search/*";
 
 function write(root, relativePath, content) {
   const target = path.join(root, relativePath);
@@ -57,6 +58,7 @@ function createReleaseFixture(t, overrides = {}) {
       "`sidePanel`",
       BILIBILI_MATCH,
       ZHIHU_CONTENT_MATCH,
+      DOUYIN_CONTENT_MATCH,
       "npm test",
       "docs/architecture.md",
       "docs/data-contract.md",
@@ -73,6 +75,7 @@ function createReleaseFixture(t, overrides = {}) {
       '`permissions: ["sidePanel"]`',
       '`host_permissions: ["https://search.bilibili.com/*"]`',
       ZHIHU_CONTENT_MATCH,
+      DOUYIN_CONTENT_MATCH,
       "清空业务数据",
       "Settings",
       "不保存什么"

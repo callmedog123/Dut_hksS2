@@ -213,8 +213,8 @@ Bilibili / Zhihu / Douyin Search Page
 | 11 | 实施 Consideration v2 | P1 | 10 | COMPLETED |
 | 12 | 跨平台 Re-encounter v2 | P1 | 11 | COMPLETED |
 | 13 | 知乎 Adapter 与 Runtime | P2 | 6、8、12 | COMPLETED |
-| 14 | 知乎原生标签增强 | P2 | 13 | PARTIAL（审计与 fallback COMPLETED；原生 Provider 未实现） |
-| 15 | 抖音 Adapter 与 Runtime | P2 | 6、8、12 | PENDING |
+| 14 | 知乎原生标签增强 | P2 | 13 | COMPLETED（按安全边界审计后采用本地 fallback；无原生 Provider） |
+| 15 | 抖音 Adapter 与 Runtime | P2 | 6、8、12 | COMPLETED（自动验证；真实 Chrome PENDING） |
 | 16 | 抖音原生标签增强 | P2 | 15 | PENDING |
 | 17 | 三平台最终集成与发布验收 | P0 | 9、12、14、16 | PENDING |
 
@@ -1299,8 +1299,9 @@ URL、content-script match 和 host permission。
 - 内置浏览器完成了标签来源审计；加载 unpacked extension 的真实 Chrome Network/
   IndexedDB 手动确认仍待执行，不能由自动测试替代。
 
-**任务 14 状态**：PARTIAL（隐私安全的审计与 fallback 路径 COMPLETED；没有声称已取得
-知乎原生标签，原生 Provider 未实现）。
+**任务 14 状态**：COMPLETED（任务提示词明确允许在登录/签名/私有接口不稳定时放弃
+原生数据并使用本地 fallback；当前已完成该安全闭环。此状态不代表取得了知乎原生标签，
+生产 Provider 仍为 `null`，README/答辩必须如实披露）。
 
 **下一步**：任务 15（抖音 Adapter 与 Runtime）；本任务完成后不得自动开始。
 
@@ -1328,6 +1329,32 @@ URL、content-script match 和 host permission。
 允许修改 Douyin Adapter/fixture/测试、registry/content entry、通用 Runtime 的
 必要兼容、经批准 Manifest、validate-build 和路线图。
 ```
+
+#### 任务 15 完成记录（2026-08-29）
+
+- 冻结入口为 `https://www.douyin.com/search/*`，Adapter 进一步校验 HTTPS、精确
+  `www.douyin.com`、非空路径搜索词以及综合/视频搜索类型；主页、详情页和用户搜索不匹配；
+- 新增 Douyin Content Script、薄 Runtime、Adapter 与真实站点 Registry 接线，复用通用
+  Site Runtime、Candidate Binding 和全部 collectors；选择器只存在于 Douyin Adapter；
+- 只产生 `VIDEO` 与 `IMAGE_POST`，使用 `douyin:video:<aweme_id>` /
+  `douyin:image_post:<aweme_id>` 和稳定 `/video/<id>` / `/note/<id>` URL；无稳定 ID、
+  无标题、未知类型和重复候选安全跳过；
+- DOM 可见 hashtag 通过 Adapter 的可选 `extractCandidateTags()` 产生独立
+  `CandidateNativeTagsV1` DTO；不把 `nativeTags` 塞入严格的 `CandidateV1`，缺失时复用
+  任务 7/8 标题与搜索词 fallback；
+- Manifest 只增加精确抖音静态 Content Script 和按 origin 限定的本地模块 WAR；由于没有
+  后台网络请求，未增加抖音 host permission，也没有 API、Cookie、Token、签名或远程代码；
+- build/release 校验已扩展到三平台精确模块图，并继续拒绝宽泛 match、多余 host permission、
+  站点 DOM 泄漏到 Site Runtime 和直接 storage 访问；临时调试脚本已移除；
+- `node --test` 与 `npm test` 均为 490/490 通过；`npm run typecheck` 检查 107 个
+  JavaScript 文件通过；`npm run build` 的 build/release validation 通过；
+  `git diff --check` 通过；
+- 真实 Chrome 的登录/反爬状态、当前 DOM、动态加载、点击、SPA、cleanup 和 hashtag 仍须
+  按人工检查表验证，自动 fixture 不替代浏览器事实。
+
+**任务 15 状态**：COMPLETED（实现、自动验证与文档）；真实 Chrome 手动验收：PENDING。
+
+**下一步**：任务 16（抖音原生标签增强）；本任务完成后不得自动开始。
 
 ### 任务 16：抖音原生标签增强
 

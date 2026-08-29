@@ -5,6 +5,7 @@ import {
   LAYOUT_TYPES
 } from "../../shared/types.js";
 import { normalizeCandidateUrl } from "../../shared/url.js";
+import { normalizeNativeTags } from "../../shared/tags.js";
 import { createCandidateBindingRegistry } from "../candidateBinding.js";
 
 const RESULT_CARD_SELECTOR = '[id^="waterfall_item_"]';
@@ -88,7 +89,7 @@ function readContextKey(document) {
  * @returns {string | null}
  */
 function readNumericId(card) {
-  const id = card.id ?? card.getAttribute?.("id") ?? card.getAttribute?.("id");
+  const id = card.id ?? card.getAttribute?.("id");
   if (!id || !id.startsWith("waterfall_item_")) {
     return null;
   }
@@ -130,7 +131,7 @@ function readNativeTags(card) {
       tags.push(tag);
     }
   }
-  return tags.slice(0, 10); // Limit to 10 tags
+  return [...normalizeNativeTags(tags)];
 }
 
 /**
@@ -308,6 +309,29 @@ export function createDouyinSearchAdapter(options = {}) {
   }
 
   /**
+   * Native tags travel through the dedicated CandidateNativeTagsV1 message
+   * contract. They must never be appended to CandidateV1, whose validator is
+   * intentionally exact and whose persisted shape stays tag-free.
+   *
+   * @param {Document} document
+   * @returns {import("../../shared/types.js").CandidateNativeTagsV1[]}
+   */
+  function extractCandidateTags(document) {
+    const bindings = scanCandidateBindings(document);
+    const tags = [];
+    for (const binding of bindings) {
+      const nativeTags = readNativeTags(binding.element);
+      if (nativeTags.length > 0) {
+        tags.push({
+          candidateId: binding.candidate.id,
+          nativeTags
+        });
+      }
+    }
+    return tags;
+  }
+
+  /**
    * @param {() => void} onCandidatesChanged
    * @returns {() => void}
    */
@@ -383,6 +407,7 @@ export function createDouyinSearchAdapter(options = {}) {
     canHandle,
     getContext,
     extractCandidates,
+    extractCandidateTags,
     observeChanges
   });
 }

@@ -8,8 +8,7 @@
     "sidePanel"
   ],
   "host_permissions": [
-    "https://search.bilibili.com/*",
-    "https://www.douyin.com/*"
+    "https://search.bilibili.com/*"
   ],
   "content_scripts": [
     {

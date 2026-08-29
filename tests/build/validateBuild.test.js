@@ -9,6 +9,8 @@ const validatorPath = path.resolve("scripts/validate-build.js");
 const BILIBILI_MATCH = "https://search.bilibili.com/*";
 const ZHIHU_CONTENT_MATCH = "https://www.zhihu.com/search*";
 const ZHIHU_RESOURCE_MATCH = "https://www.zhihu.com/*";
+const DOUYIN_CONTENT_MATCH = "https://www.douyin.com/search/*";
+const DOUYIN_RESOURCE_MATCH = "https://www.douyin.com/*";
 const SHARED_RESOURCES = [
   "content/candidateBinding.js",
   "content/eventCollector/click.js",
@@ -28,6 +30,12 @@ const ZHIHU_RESOURCES = [
   "content/zhihuRuntime.js",
   "content/siteRuntime.js",
   "content/adapters/zhihuSearchAdapter.js",
+  ...SHARED_RESOURCES
+];
+const DOUYIN_RESOURCES = [
+  "content/douyinRuntime.js",
+  "content/siteRuntime.js",
+  "content/adapters/douyinSearchAdapter.js",
   ...SHARED_RESOURCES
 ];
 
@@ -53,6 +61,11 @@ function createBuildFixture(t, overrides = {}) {
         matches: [ZHIHU_CONTENT_MATCH],
         js: ["content/zhihuContentScript.js"],
         run_at: "document_idle"
+      },
+      {
+        matches: [DOUYIN_CONTENT_MATCH],
+        js: ["content/douyinContentScript.js"],
+        run_at: "document_idle"
       }
     ],
     web_accessible_resources: [
@@ -63,6 +76,10 @@ function createBuildFixture(t, overrides = {}) {
       {
         resources: ZHIHU_RESOURCES,
         matches: [ZHIHU_RESOURCE_MATCH]
+      },
+      {
+        resources: DOUYIN_RESOURCES,
+        matches: [DOUYIN_RESOURCE_MATCH]
       }
     ],
     background: { service_worker: "background/serviceWorker.js" },
@@ -82,8 +99,10 @@ function createBuildFixture(t, overrides = {}) {
     "content/demoRuntime.js",
     "content/contentScript.js",
     "content/zhihuContentScript.js",
+    "content/douyinContentScript.js",
     ...BILIBILI_RESOURCES,
     ...ZHIHU_RESOURCES,
+    ...DOUYIN_RESOURCES,
     "sidepanel/app.js",
     "demo/index.html",
     "demo/app.js"
@@ -98,8 +117,21 @@ function createBuildFixture(t, overrides = {}) {
     "utf8"
   );
   writeFileSync(
+    path.join(root, "content/douyinContentScript.js"),
+    'const runtimeModuleUrl = chrome.runtime.getURL("content/douyinRuntime.js"); import(runtimeModuleUrl).then(({ startDouyinRuntime }) => startDouyinRuntime());',
+    "utf8"
+  );
+  writeFileSync(
     path.join(root, "content/contentScript.js"),
     'const runtimeModuleUrl = chrome.runtime.getURL("content/bilibiliRuntime.js"); import(runtimeModuleUrl).then(({ startBilibiliRuntime }) => startBilibiliRuntime());',
+    "utf8"
+  );
+  writeFileSync(
+    path.join(root, "content/douyinRuntime.js"),
+    [
+      'import "./adapters/douyinSearchAdapter.js";',
+      'import "./siteRuntime.js";'
+    ].join("\n"),
     "utf8"
   );
   writeFileSync(
@@ -137,7 +169,7 @@ function createBuildFixture(t, overrides = {}) {
   return root;
 }
 
-test("build validation accepts Bilibili plus the approved Zhihu search scope", (t) => {
+test("build validation accepts the approved Bilibili, Zhihu, and Douyin scopes", (t) => {
   const root = createBuildFixture(t);
   const result = spawnSync(process.execPath, [validatorPath], {
     cwd: root,
@@ -179,7 +211,7 @@ test("build validation rejects broad content script matches", (t) => {
   });
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /exact Bilibili and approved Zhihu search entries/u);
+  assert.match(result.stderr, /exact approved Bilibili, Zhihu, and Douyin search entries/u);
 });
 
 test("build validation rejects an unapproved third content script entry", (t) => {
@@ -208,7 +240,7 @@ test("build validation rejects an unapproved third content script entry", (t) =>
   });
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /exact Bilibili and approved Zhihu search entries/u);
+  assert.match(result.stderr, /exact approved Bilibili, Zhihu, and Douyin search entries/u);
 });
 
 test("build validation rejects a Zhihu host permission", (t) => {
@@ -238,6 +270,35 @@ test("build validation rejects a broad Zhihu web-accessible scope", (t) => {
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /approved site runtime modules/u);
+});
+
+test("build validation rejects a broad Douyin content-script scope", (t) => {
+  const root = createBuildFixture(t, {
+    content_scripts: [
+      {
+        matches: [BILIBILI_MATCH],
+        js: ["content/contentScript.js"],
+        run_at: "document_idle"
+      },
+      {
+        matches: [ZHIHU_CONTENT_MATCH],
+        js: ["content/zhihuContentScript.js"],
+        run_at: "document_idle"
+      },
+      {
+        matches: [DOUYIN_RESOURCE_MATCH],
+        js: ["content/douyinContentScript.js"],
+        run_at: "document_idle"
+      }
+    ]
+  });
+  const result = spawnSync(process.execPath, [validatorPath], {
+    cwd: root,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /exact approved Bilibili, Zhihu, and Douyin/u);
 });
 
 test("build validation rejects collectors left in the Bilibili wrapper", (t) => {

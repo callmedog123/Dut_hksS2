@@ -113,6 +113,8 @@ class FixtureDocument {
     this.documentElement = new FixtureElement("html");
     this.body = new FixtureElement("body");
     this.documentElement.appendChild(this.body);
+    this.documentElement.parentNode = this;
+    this.listeners = new Map();
   }
 
   querySelector(selector) {
@@ -126,6 +128,74 @@ class FixtureDocument {
   createElement(tagName) {
     return new FixtureElement(tagName);
   }
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type, listener) {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatch(type, target, init = {}) {
+    let preventDefaultCalls = 0;
+    const event = {
+      type,
+      target,
+      button: init.button ?? 0,
+      ctrlKey: init.ctrlKey ?? false,
+      metaKey: init.metaKey ?? false,
+      defaultPrevented: false,
+      preventDefault() {
+        preventDefaultCalls += 1;
+        this.defaultPrevented = true;
+      },
+      get preventDefaultCalls() {
+        return preventDefaultCalls;
+      }
+    };
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event);
+    }
+    return event;
+  }
+}
+
+export function createMutationObserverHarness() {
+  const instances = [];
+  class FixtureMutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.connected = false;
+      this.disconnectCount = 0;
+      instances.push(this);
+    }
+    observe(target, options) {
+      this.target = target;
+      this.options = options;
+      this.connected = true;
+    }
+    disconnect() {
+      this.disconnectCount += 1;
+      this.connected = false;
+    }
+    notify() {
+      if (this.connected) {
+        this.callback([], this);
+      }
+    }
+  }
+  return {
+    MutationObserver: FixtureMutationObserver,
+    instances,
+    notifyAll() {
+      for (const instance of instances) {
+        instance.notify();
+      }
+    }
+  };
 }
 
 export const DOUYIN_SEARCH_URL = "https://www.douyin.com/search/%E5%A5%BD%E5%90%83%E7%9A%84";
@@ -151,11 +221,14 @@ export const HASHTAG_PERMANENT_URL = "https://www.douyin.com/video/7577281433874
 export function createDouyinSearchDom(options = {}) {
   const { url = DOUYIN_SEARCH_URL, cards = [] } = options;
   const doc = new FixtureDocument(url);
-  
+
   const container = new FixtureElement("div", { id: "waterFallScrollContainer" });
   doc.body.appendChild(container);
-  
-  for (const card of cards) {
+
+  const cardElements = [];
+  const clickTargets = [];
+
+  function appendCard(card) {
     const cardEl = new FixtureElement("div", { id: card.id });
     const innerCard = new FixtureElement("div", { className: "search-result-card" });
     const clickable = new FixtureElement("div", { className: "PtY9QFFE" });
@@ -163,7 +236,7 @@ export function createDouyinSearchDom(options = {}) {
     const titleWrapper = new FixtureElement("div", { className: "K4Ja9W9H" });
     const titleInner = new FixtureElement("div", { className: "vrPRtA6U" });
     const titleText = new FixtureElement("div", { className: "BjLsdJMi", text: card.title });
-    
+
     titleInner.appendChild(titleText);
     titleWrapper.appendChild(titleInner);
     flexCol.appendChild(titleWrapper);
@@ -171,8 +244,34 @@ export function createDouyinSearchDom(options = {}) {
     innerCard.appendChild(clickable);
     cardEl.appendChild(innerCard);
     container.appendChild(cardEl);
+    cardElements.push(cardEl);
+    clickTargets.push(titleText);
+    return cardEl;
   }
-  
+
+  function replaceCards(nextCards) {
+    cardElements.length = 0;
+    clickTargets.length = 0;
+    container.replaceChildren();
+    for (const card of nextCards) {
+      appendCard(card);
+    }
+  }
+
+  for (const card of cards) {
+    appendCard(card);
+  }
+
+  doc.addCard = appendCard;
+  doc.replaceCards = replaceCards;
+  doc.navigate = (nextUrl, nextCards = []) => {
+    doc.location.href = nextUrl;
+    doc.baseURI = nextUrl;
+    replaceCards(nextCards);
+  };
+  doc.cardElements = cardElements;
+  doc.clickTarget = (index) => clickTargets[index];
+
   return doc;
 }
 
