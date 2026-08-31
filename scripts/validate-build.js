@@ -38,7 +38,8 @@ const DOUYIN_CONTENT_MODULE_RESOURCES = [
   "content/douyinRuntime.js",
   "content/siteRuntime.js",
   "content/adapters/douyinSearchAdapter.js",
-  ...SHARED_CONTENT_MODULE_RESOURCES
+  ...SHARED_CONTENT_MODULE_RESOURCES,
+  "shared/tags.js"
 ];
 
 function check(condition, message) {
