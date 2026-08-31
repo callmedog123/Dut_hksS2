@@ -171,35 +171,6 @@ flowchart LR
 
 Manifest 没有声明 `storage`、`tabs`、`scripting`、`activeTab`、`cookies`、`webRequest` 或 `<all_urls>`。Repository 使用扩展自身 origin 的 IndexedDB，不需要 `storage` permission。
 
-## 测试与构建
-
-项目没有第三方 npm 依赖，因此无需先执行 `npm install`：
-
-```bash
-# 全仓 Node 测试
-npm test
-
-# 对仓库内全部 JavaScript 执行语法检查
-npm run typecheck
-
-# Manifest、模块图、发布文档和敏感文件静态校验
-npm run build
-
-# 消息契约专项测试
-npm run test:messages
-```
-
-自动测试不能替代真实 Chrome。发布前还应完成 [浏览器人工检查表](docs/manual-browser-checklist.md)。
-
-## 当前范围与限制
-
-- Consideration 和 Re-encounter 参数尚未完成目标用户样本校准，可能产生误判或漏判。
-- 关键词和本地标签 Jaccard 只能解释文本重合，不代表语义理解。
-- Bilibili、知乎和抖音的 DOM 更新可能暂时影响候选识别。
-- 页面登录、人机验证或网络状态可能影响真实站点复现；扩展不会绕过这些限制。
-- 重逢卡片展示后会进入 24 小时冷却；重复演示前可清空本地业务数据。
-- 当前版本是比赛原型，不声称已经验证长期用户效果。
-
 ## 可选：开发者离线自检
 
 仓库保留一个确定性的扩展内部 Demo，用于在真实网站不可用或 DOM 变化时检查消息、信号、结算、恢复和 Side Panel 闭环。它不是主要产品体验，也不代表真实站点表现。
