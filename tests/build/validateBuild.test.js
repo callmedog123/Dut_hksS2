@@ -36,7 +36,8 @@ const DOUYIN_RESOURCES = [
   "content/douyinRuntime.js",
   "content/siteRuntime.js",
   "content/adapters/douyinSearchAdapter.js",
-  ...SHARED_RESOURCES
+  ...SHARED_RESOURCES,
+  "shared/tags.js"
 ];
 
 function createBuildFixture(t, overrides = {}) {

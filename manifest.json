@@ -85,7 +85,8 @@
         "content/visibility.js",
         "shared/messages.js",
         "shared/types.js",
-        "shared/url.js"
+        "shared/url.js",
+        "shared/tags.js"
       ],
       "matches": [
         "https://www.douyin.com/*"
