@@ -65,7 +65,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | Bilibili | [打开 Bilibili 搜索](https://search.bilibili.com/) | [https://search.bilibili.com/](https://search.bilibili.com/) | 带稳定 BV 号的视频搜索卡片 |
 | 知乎 | [打开知乎内容搜索](https://www.zhihu.com/search?type=content) | [https://www.zhihu.com/search?type=content](https://www.zhihu.com/search?type=content) | 问题、具体回答和文章 |
-| 抖音 | [打开抖音并使用顶部搜索框](https://www.douyin.com/) | [https://www.douyin.com/](https://www.douyin.com/) | 带稳定作品 ID 的普通视频和图文作品 |
+| 抖音 | [打开抖音并使用顶部搜索框](https://www.douyin.com/search/) | [https://www.douyin.com/search/](https://www.douyin.com/) | 带稳定作品 ID 的普通视频和图文作品 |
 
 打开上述页面后，请在网站搜索框中输入关键词并提交。扩展会在搜索结果 URL 包含实际查询词后建立搜索情境：Bilibili 使用 `keyword` 参数，知乎使用 `q` 参数，抖音使用 `/search/<关键词>` 路径。
 
