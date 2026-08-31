@@ -1,186 +1,238 @@
 # The Unclicked（余路）
 
-The Unclicked 是一个 Chrome Manifest V3、local-first 的比赛原型：它记住用户在搜索结果页中“认真考虑过但最终没有选择”的候选，并在之后出现相关搜索情境时，以可解释的方式让这些路径重新出现。
+> 记住那些认真考虑过，却最终没有点击的路径。
 
-当前 v2 是可安装、可测试的扩展源码，不是云服务。运行时不使用大模型、Embedding、后端、账号或云同步；真实站点接入 Bilibili、知乎与抖音搜索页，本地 Demo 用来稳定复现完整闭环。
+The Unclicked 是一个 Chrome Manifest V3、local-first 的浏览器扩展。它观察搜索结果卡片的最小聚合信号，识别用户认真考虑但最终没有选择的候选，并在之后出现相关搜索情境时，以少量、可解释的方式让这些路径重新出现。
 
-## 赛道定位
+扩展运行时不依赖大模型、Embedding、后端、账号或云同步。所有业务数据保存在浏览器扩展自身的 IndexedDB 中。
 
-- 主赛道：开放原子开源基金会 Track 03「制造一点意外」。项目不只记录已点击路径，而是把通常被搜索历史丢失的“认真考虑但未选择”转化为可解释、可再次遇见的本地记忆。
-- 副赛道：奇绩创坛「为现实打个补丁」。项目针对资料检索和多方案比较中的真实遗漏，用可安装扩展、可重复 Demo 和用户可控的本地数据闭环提供一个可验证补丁。
+## 为什么需要它
 
-当前版本是比赛原型，评分参数尚未完成人群校准，真实站点适配也必须以 Chrome 人工验收为准；不声称已经验证长期用户效果。
+搜索历史通常只保留“最后点了什么”，很少记录“差一点点了什么”。在资料检索、学习和多方案比较中，一些被认真查看却没有立即选择的结果，可能在新的相关任务中重新变得有价值。
 
-## 它解决什么问题
+The Unclicked 将这段容易消失的过程变成一个本地、可控制的闭环：
 
-搜索历史通常只保留“最后点了什么”，很少保留“差一点点了什么”。对于查资料、做研究、学习或比较方案的人，这些被认真看过却未选择的结果，可能在新的相关情境中重新变得有价值。
+1. 在搜索结果页识别候选和当前搜索情境。
+2. 聚合候选卡片的可见、Hover、回看和点击信号。
+3. 会话结束时排除已点击候选，形成可解释的 Missed Path。
+4. 在新的相关搜索中，最多展示 3 条情境化重逢。
+5. 用户可以打开、稍后处理、标记不相关、暂停采集、删除单条记录或清空全部业务数据。
 
-目标用户是经常进行多结果比较的学生、研究者和知识工作者。P0 的核心闭环是：
-
-1. 在受支持的搜索结果页识别候选及最小搜索情境。
-2. 只聚合候选卡片的可见时长、悬停时长/次数、回看次数和是否点击。
-3. 会话结算时排除已经点击的候选，并用固定启发式评分形成 Missed Path。
-4. 在新的相关搜索情境中按关键词相似度、历史考虑强度、新鲜度、冷却和反馈排序，最多展示 3 条情境化重逢。
-5. 用户可以打开、稍后处理、标记不相关、暂停采集、单条删除或清空本地业务数据。
-
-## 技术闭环
+## 核心体验
 
 ```mermaid
 flowchart LR
-  A[本地 Demo / Bilibili / 知乎 / 抖音搜索页] --> B[Site Adapter]
-  B --> C[Candidate 与页面内 Element 绑定]
-  C --> D[可见 / Hover / 回看 / 点击聚合]
-  D --> E[Chrome 消息契约]
-  E --> F[Service Worker + 业务用例]
-  F --> G[IndexedDB Repository]
-  G --> H[Missed Path / Re-encounter DTO]
-  H --> I[Side Panel]
+  A[搜索与比较] --> B[认真考虑但未点击]
+  B --> C[形成 Missed Path]
+  C --> D[进入新的相关搜索]
+  D --> E[情境化重逢]
 ```
 
-DOM Element 只在页面内存中存在；消息和 IndexedDB 只接收严格校验的 JSON 数据。Service Worker 的幂等结算与恢复依赖持久化状态，不依赖长驻内存。更完整的模块边界见 [技术架构](docs/architecture.md)，字段和消息见 [数据契约](docs/data-contract.md)。
+已点击的候选归入 Chosen，永远不会成为 Missed Path。评分和排序使用固定、可解释的启发式；Side Panel 只展示后台提供的 DTO，不读取网页或直接访问存储。
 
-## 环境假设
+## 安装
 
-- Chrome 114+。`manifest.json` 的 `minimum_chrome_version` 为 `114`，并使用 Chrome Side Panel API。
-- 扩展运行不需要 Node.js，也没有 npm 运行时依赖。
-- 开发和自动测试建议使用 Node.js 20+。本次发布冻结在 Node.js 24.16.0、npm 11.13.0 上验证。
-- 根目录就是 unpacked extension 目录；`npm run build` 做静态发布校验，不会生成 `dist/` 或压缩包。
+### 环境
 
-## 安装 unpacked extension
+- Chrome 114+。
+- 扩展运行不需要 Node.js。
+- 开发和自动测试建议使用 Node.js 20+。
+- 项目没有第三方 npm 依赖。
 
-1. 获取一个干净目录：
+### 加载 unpacked extension
+
+1. 获取源码：
 
    ```bash
    git clone https://github.com/callmedog123/Dut_hksS2.git
    cd Dut_hksS2
    ```
 
-   也可以从 GitHub 下载源码 ZIP 并完整解压。不要选择 ZIP 文件本身。
+   也可以从 GitHub 下载源码 ZIP 并完整解压。
 
 2. 在 Chrome 地址栏打开 `chrome://extensions/`。
-3. 打开右上角“开发者模式”。
-4. 点击“加载未打包的扩展程序”（部分 Chrome 中文版本显示为“加载已解压的扩展程序”）。
+3. 开启右上角“开发者模式”。
+4. 点击“加载未打包的扩展程序”或“加载已解压的扩展程序”。
 5. 选择包含 `manifest.json` 的仓库根目录。
 6. 确认扩展卡片显示 The Unclicked（余路），且没有加载错误。
-7. 点击浏览器工具栏中的扩展图标；扩展会把操作按钮配置为打开 Side Panel。
+7. 点击浏览器工具栏中的扩展图标，打开 Side Panel。
 
-修改源码后，在 `chrome://extensions/` 的扩展卡片上点击“重新加载”，并刷新已经打开的测试页面。
+修改源码后，需要在扩展卡片上点击“重新加载”，并刷新已经打开的搜索页面。
 
-## 本地 Demo：稳定复现完整闭环
+## 当前可使用页面
 
-扩展加载后，从扩展卡片复制扩展 ID，在地址栏打开：
+| 平台 | 空白搜索入口 | 具体网址 | 提交搜索后识别的内容 |
+| --- | --- | --- | --- |
+| Bilibili | [打开 Bilibili 搜索](https://search.bilibili.com/) | [https://search.bilibili.com/](https://search.bilibili.com/) | 带稳定 BV 号的视频搜索卡片 |
+| 知乎 | [打开知乎内容搜索](https://www.zhihu.com/search?type=content) | [https://www.zhihu.com/search?type=content](https://www.zhihu.com/search?type=content) | 问题、具体回答和文章 |
+| 抖音 | [打开抖音并使用顶部搜索框](https://www.douyin.com/) | [https://www.douyin.com/](https://www.douyin.com/) | 带稳定作品 ID 的普通视频和图文作品 |
+
+打开上述页面后，请在网站搜索框中输入关键词并提交。扩展会在搜索结果 URL 包含实际查询词后建立搜索情境：Bilibili 使用 `keyword` 参数，知乎使用 `q` 参数，抖音使用 `/search/<关键词>` 路径。
+
+页面中的广告、用户结果、无标题结果、异常链接以及没有稳定内容 ID 的卡片会被安全跳过。网站 DOM 更新后可能需要更新对应 Adapter，真实行为应以加载当前扩展后的 Chrome 人工验收为准。
+
+## 五分钟复现：Bilibili Missed Path 与情境化重逢
+
+以下流程使用三个搜索词：
+
+1. `机器人 导航 路径规划`：生成第一条 Missed Path。
+2. `强化学习 入门`：结算第一个搜索，并生成第二条 Missed Path。
+3. `机器人 导航 路径规划 教程`：结算第二个搜索，并展示与第一组关键词相关的重逢。
+
+### 准备
+
+1. 打开 Side Panel。
+2. 确认“采集控制”处于开启状态。
+3. 点击“清空全部本地数据”，再次确认清空，避免旧记录和 24 小时展示冷却影响本次复现。
+
+### 第一次搜索：机器人导航与路径规划
+
+1. 打开 [机器人 导航 路径规划](https://search.bilibili.com/all?keyword=%E6%9C%BA%E5%99%A8%E4%BA%BA%20%E5%AF%BC%E8%88%AA%20%E8%B7%AF%E5%BE%84%E8%A7%84%E5%88%92)。
+2. 选择一张感兴趣、但准备暂时不打开的视频卡片。
+3. 让该卡片至少一半保持在视口中约 10 秒，并累计 Hover 约 3 秒。
+4. 将卡片滚出视口，再滚回查看一次；始终不要点击这张卡片。
+5. 可选：点击另一张视频卡片，用来验证已点击候选不会进入 Missed Path。
+
+### 第二次搜索：强化学习入门
+
+1. 使用 Bilibili 搜索框进入 [强化学习 入门](https://search.bilibili.com/all?keyword=%E5%BC%BA%E5%8C%96%E5%AD%A6%E4%B9%A0%20%E5%85%A5%E9%97%A8)。搜索情境变化会结算第一次搜索。
+2. 按照相同方式选择一张卡片：保持可见约 10 秒、累计 Hover 约 3 秒、滚离后回看，但不要点击。
+3. Side Panel 的“考虑过但未选择”中应出现第一次搜索产生的 Missed Path。
+
+### 第三次搜索：展示重逢
+
+1. 使用搜索框进入 [机器人 导航 路径规划 教程](https://search.bilibili.com/all?keyword=%E6%9C%BA%E5%99%A8%E4%BA%BA%20%E5%AF%BC%E8%88%AA%20%E8%B7%AF%E5%BE%84%E8%A7%84%E5%88%92%20%E6%95%99%E7%A8%8B)。这会结算第二次搜索。
+2. Side Panel 中应能看到两次搜索留下的 Missed Path。
+3. 当前搜索与第一组关键词存在明确重合，“情境化重逢”区域应展示来自第一次搜索的相关候选。
+4. 可以对重逢卡片执行“打开”“稍后”或“不相关”，并观察后台确认后的 UI 状态。
+
+结果数量会受到实际搜索结果、页面停留方式、评分阈值和网站 DOM 的影响。如果候选没有形成 Missed Path，应先确认卡片至少 50% 可见、可见时间和 Hover 时间足够，并确认采集没有暂停。
+
+## 如何判断“认真考虑过”
+
+扩展不保存鼠标轨迹或原始高频事件，只累计候选级信号：
+
+- 卡片至少 50% 可见时的累计可见时长；
+- Hover 累计时长和次数；
+- 离开视口后再次进入的回看次数；
+- 候选是否被点击。
+
+会话结算时，已点击候选被排除；其余候选通过固定启发式计算 Consideration Score。重逢排序综合当前搜索词匹配、历史考虑强度、新鲜度、展示冷却和用户反馈。所有原因都由后台生成并随 DTO 交给 Side Panel 展示。
+
+## Local-first 与隐私
+
+扩展保存在本地 IndexedDB 中的数据包括：
+
+- 最小 SearchContext：搜索词、来源和时间；
+- Candidate：稳定 ID、标题、规范化 URL、来源、排名和 Session ID；
+- 候选级聚合信号；
+- Session、Chosen、Missed Path、Re-encounter 和 Settings。
+
+扩展不保存：
+
+- 键盘输入过程、表单内容或密码；
+- Cookie、Token、登录凭据或请求头；
+- 完整网页正文、回答正文、评论、视频或截图；
+- 鼠标坐标、逐点轨迹或 DOM Element；
+- 跨站浏览历史。
+
+扩展没有后端、账号、遥测、云同步或模型调用。用户可以通过 Side Panel 暂停/恢复采集、删除单条 Missed Path 或清空全部本地业务数据。完整说明见 [权限与隐私](docs/permissions-and-privacy.md)。
+
+## 技术架构
+
+```mermaid
+flowchart LR
+  A[Search Page Adapter] --> B[Site Runtime + Collectors]
+  B --> C[严格 Chrome 消息]
+  C --> D[Service Worker + Use Cases]
+  D --> E[IndexedDB Repository]
+  E --> F[Missed Path / Re-encounter DTO]
+  F --> G[Side Panel]
+```
+
+- DOM 选择器只存在于各站点 Adapter。
+- Candidate 与 Element 的绑定只存在于页面内存。
+- 消息、Repository 和 Side Panel 之间传递经过严格校验的纯数据。
+- Service Worker 的关键状态持久化，恢复和结算不依赖长驻内存定时器。
+- Session Owner 隔离 tab、document 和 frame，避免多标签页上下文串线。
+
+详细模块说明见 [技术架构](docs/architecture.md)，共享字段、消息和存储结构见 [数据契约](docs/data-contract.md)。
+
+## 权限
+
+| Manifest 声明 | 用途 |
+| --- | --- |
+| `sidePanel` | 注册并展示正式 Side Panel |
+| `https://search.bilibili.com/*` host permission | 在 Bilibili 搜索页读取候选卡片 |
+| `https://search.bilibili.com/*` content script match | 启动 Bilibili Runtime |
+| `https://www.zhihu.com/search*` content script match | 在知乎内容搜索路径启动入口 |
+| `https://www.douyin.com/search/*` content script match | 在抖音搜索路径启动入口 |
+| 三个平台对应的受限 `web_accessible_resources` | 允许入口加载仓库内明确列出的 ES Modules |
+
+Manifest 没有声明 `storage`、`tabs`、`scripting`、`activeTab`、`cookies`、`webRequest` 或 `<all_urls>`。Repository 使用扩展自身 origin 的 IndexedDB，不需要 `storage` permission。
+
+## 测试与构建
+
+项目没有第三方 npm 依赖，因此无需先执行 `npm install`：
+
+```bash
+# 全仓 Node 测试
+npm test
+
+# 对仓库内全部 JavaScript 执行语法检查
+npm run typecheck
+
+# Manifest、模块图、发布文档和敏感文件静态校验
+npm run build
+
+# 消息契约专项测试
+npm run test:messages
+```
+
+自动测试不能替代真实 Chrome。发布前还应完成 [浏览器人工检查表](docs/manual-browser-checklist.md)。
+
+## 当前范围与限制
+
+- Consideration 和 Re-encounter 参数尚未完成目标用户样本校准，可能产生误判或漏判。
+- 关键词和本地标签 Jaccard 只能解释文本重合，不代表语义理解。
+- Bilibili、知乎和抖音的 DOM 更新可能暂时影响候选识别。
+- 页面登录、人机验证或网络状态可能影响真实站点复现；扩展不会绕过这些限制。
+- 重逢卡片展示后会进入 24 小时冷却；重复演示前可清空本地业务数据。
+- 当前版本是比赛原型，不声称已经验证长期用户效果。
+
+## 可选：开发者离线自检
+
+仓库保留一个确定性的扩展内部 Demo，用于在真实网站不可用或 DOM 变化时检查消息、信号、结算、恢复和 Side Panel 闭环。它不是主要产品体验，也不代表真实站点表现。
 
 ```text
 chrome-extension://<扩展 ID>/demo/index.html
 ```
 
-建议先在 Side Panel 中确认采集设置已恢复；已经打开且曾进入暂停状态的搜索页，需要等待页面更新或手动刷新后继续采集。在需要隔离结果时执行“清空全部本地数据”→“确认清空”。清空会删除 Session、Chosen、Missed Path、活动情境和重逢记录，但会保留采集设置。
-
-一次标准 Demo 操作：
-
-1. 打开 Side Panel，再打开本地 Demo。
-2. 确认页面出现“PING/PONG 成功”和“Demo Runtime 已启动，当前发现 2 个候选项”。
-3. 普通点击、Ctrl/Cmd+点击或中键打开第一条 `Human Cognitive Map and Spatial Representation`，让它成为 Chosen。
-4. 点击“推进场景（模拟 12 秒）”。页面会加入低信号动态候选，但它不应达到记录阈值。
-5. 点击“结束会话”。Side Panel 应新增且只新增一条 `Planning with Learned World Models` Missed Path。
-6. 点击“再次结束会话（幂等）”，记录数应保持不变。
-
-Demo 使用 `knowledge.example` 占位 URL，不代表外部页面可访问，也不需要 host permission。连续三轮和控制项的完整人工表见 [浏览器人工检查表](docs/manual-browser-checklist.md)。
-
-## Bilibili 支持范围
-
-P0 只在 `https://search.bilibili.com/*` 运行，并要求 URL 含非空 `keyword` 查询参数。当前 Adapter 识别 `.video-list` 内的 `.bili-video-card`，读取标题和指向 `https://www.bilibili.com/video/BV...` 的视频链接；它支持初始结果、动态新增结果、搜索词 SPA 切换和普通/中键/Ctrl/Cmd 点击归因。
-
-这不是对整个 Bilibili 站点的支持：主页、视频详情页、其他域名和非视频结果均不在支持范围。页面 DOM/类名更新可能使选择器失效；失效时 Runtime 应安全降级，但需要更新 Adapter 和重新人工验证。
-
-## 知乎支持范围
-
-知乎入口只匹配 `https://www.zhihu.com/search*`；Adapter 进一步要求精确 `/search` 路径、非空 `q`，且 `type` 为 `content` 或缺省。只识别问题、具体回答和文章：问题 URL 固定为 `www.zhihu.com/question/<id>`，回答必须包含具体 `/answer/<id>`，文章固定为 `zhuanlan.zhihu.com/p/<id>`。Candidate 使用 `zhihu:question:`、`zhihu:answer:`、`zhihu:article:` 命名空间，并标记 `QUESTION`、`ANSWER`、`ARTICLE` 与 `TEXT_LIST`。
-
-Adapter 依据当前页面的语义 `data-za-detail-view-path-module` 边界定位卡片，但不保存该属性或知乎的分析载荷；显式广告、用户、电子书、相关搜索、无标题和无稳定永久 URL 的结果均跳过。任务 14 再次审计确认搜索卡片没有可见话题元素；详情页虽然显示话题，但无凭据访问被拒绝，topic-only 路径不可用，官方开放平台需要 Bearer 凭据。因此生产环境明确保留标题/搜索词本地 fallback，不新增知乎 Provider、host permission、API Key，也不读取摘要、正文或登录态。知乎搜索提交当前表现为文档导航，滚动结果按批动态追加；Runtime 同时保留对 DOM 替换和同文档 URL 变化的防御性处理。
-
-## 抖音支持范围
-
-抖音入口只匹配 `https://www.douyin.com/search/*`；Adapter 进一步要求 HTTPS、精确 `www.douyin.com`、路径中含非空搜索词，且搜索类型为综合或视频。当前只识别带稳定 aweme ID 的普通视频和图文作品，生成 `douyin:video:` 或 `douyin:image_post:` 命名空间 ID，并标记 `VIDEO`/`IMAGE_POST` 与 `GRID`。用户、话题、直播、商品、广告、无稳定 ID、空标题及无法确定内容类型的卡片均不会进入 Candidate。
-
-抖音搜索卡片中肉眼可见的 hashtag 通过独立 `CandidateNativeTagsV1` 消息上报，不会塞进 Candidate 或读取正文；没有 hashtag 时仍使用标题和搜索词的本地 fallback。任务 16 的只读核查确认当前公开搜索结果文本已包含可用 hashtag，因此生产 Provider 保持 `null`，不新增网络来源。Runtime 复用通用 Site Runtime 的采集与生命周期编排，不读取 Cookie、Token、评论、用户资料、视频内容或图文正文，也不调用抖音接口。真实页面结构变化仍可能使 Adapter 失效，必须以人工检查表为准。
-
-## 权限说明
-
-| Manifest 声明 | 原因 | 明确不用于 |
-| --- | --- | --- |
-| `sidePanel` | 注册并展示 Side Panel；点击扩展按钮时打开面板 | 读取网页、联网或访问浏览历史 |
-| `https://search.bilibili.com/*` host permission | 仅让 content script 在批准的 Bilibili 搜索页运行并读取候选卡片 | Bilibili 其他页面、其他站点、Cookie 或网络拦截 |
-| Bilibili 同范围的 `content_scripts.matches` | 在 `document_idle` 启动 Bilibili Runtime | 动态注入任意页面 |
-| `https://www.zhihu.com/search*` `content_scripts.matches` | 只在知乎搜索路径加载入口；Adapter 拒绝用户等非内容搜索 | 知乎详情页、Cookie、请求拦截或后台联网 |
-| `https://www.douyin.com/search/*` `content_scripts.matches` | 只在抖音搜索路径加载入口；无需额外 host permission | 抖音主页、详情页、Cookie、请求拦截或后台联网 |
-| 三个平台对应 origin 的 `web_accessible_resources` | 让各经典 content script 动态导入各自明确列出的本地 ES Modules；Chrome 对 WAR 只能按 origin 限定 | 远程代码、资源通配或向详情页注入 Runtime |
-
-Manifest 没有声明 `storage`、`tabs`、`scripting`、`activeTab`、`cookies`、`webRequest` 或 `<all_urls>`。IndexedDB 位于扩展自身 origin，不需要 `storage` permission。逐项技术事实见 [权限与隐私](docs/permissions-and-privacy.md)。
-
-## Local-first 与数据控制
-
-保存在扩展本地 IndexedDB 中的是：最小搜索情境（搜索词、关键词、来源、时间）、候选 ID/标题/规范化 URL/排名、候选级聚合信号、会话与结算标记、Chosen、Missed Path 的分数/原因、重逢展示/反馈记录，以及采集开关等设置。
-
-不保存键盘输入事件、表单内容、密码、Cookie、Token、完整网页正文、截图、逐点鼠标轨迹或 DOM Element；扩展也不把业务数据上传到后端或模型服务。注意：搜索词、候选标题和 URL 本身仍可能包含用户敏感信息，因此本地保存和删除控制仍然重要。
-
-- 暂停/恢复：Side Panel 的“采集控制”。暂停后已有记录仍可查看和删除，后台拒绝新的采集写入。
-- 单条删除：每张 Missed Path 卡片的“删除记录”；关联重逢记录会一并删除。
-- 清空业务数据：Side Panel 的“清空全部本地数据”并二次确认；采集设置保留。
-- 完全移除扩展本地状态：在 `chrome://extensions/` 移除扩展，或使用扩展 DevTools 的存储清理工具；这是 UI 内“清空业务数据”之外的浏览器级操作。
+详细步骤和连续验收记录格式见 [浏览器人工检查表](docs/manual-browser-checklist.md)。
 
 ## 目录结构
 
 ```text
-background/   Service Worker 接线、消息路由、会话结算、评分和重逢用例
-content/      通用 Site Runtime、站点 Adapter、Candidate/Element 绑定、采集器和三平台入口
-demo/         扩展内部可重复 Demo 页面
-shared/       schemaVersion=2 的领域类型、消息验证和 URL 规范化
+background/   Service Worker、消息路由、会话结算、评分和重逢用例
+content/      通用 Site Runtime、站点 Adapter、Candidate/Element 绑定和采集器
+demo/         可选的确定性离线自检页面
+shared/       schemaVersion=2 的领域类型、消息、标签和 URL 纯函数
 storage/      Repository 与 IndexedDB 适配器
-sidepanel/    只消费后台 DTO 的 Side Panel UI
-scripts/      语法、构建和发布静态校验
-tests/        单元、集成、恢复、UI 和发布校验
-docs/         架构、数据、权限隐私与人工浏览器检查
-prototype/    早期静态原型，仅作历史材料，不是当前运行时入口
+sidepanel/    只消费后台 DTO 的正式 Side Panel
+scripts/      语法、构建和发布校验
+tests/        单元、集成、恢复、UI 和发布测试
+docs/         架构、数据契约、权限隐私和人工验收文档
 ```
 
-`manifest.json`、`background/serviceWorker.js`、三个站点的 Content Script、`sidepanel/index.html` 和 `demo/index.html` 是主要运行入口。
+## 文档
 
-## 测试与构建
+- [技术架构](docs/architecture.md)
+- [数据契约](docs/data-contract.md)
+- [权限与隐私](docs/permissions-and-privacy.md)
+- [浏览器人工检查表](docs/manual-browser-checklist.md)
 
-项目没有第三方 npm 依赖，因此无需先执行 `npm install`。在仓库根目录运行：
-
-```bash
-# 全仓 Node 测试；这是默认测试入口
-npm test
-
-# 保留的消息契约专项入口
-npm run test:messages
-
-# 对仓库内全部 JavaScript 执行 node --check
-npm run typecheck
-
-# Manifest/模块图 + 发布文档/敏感文件静态校验
-npm run build
-
-# 与 npm test 等价的直接完整测试入口
-node --test
-```
-
-自动测试不能替代真实 Chrome。合并或提交比赛版本前，仍需在一个干净目录按本 README 安装，并完成 [人工浏览器检查表](docs/manual-browser-checklist.md) 中三轮 Demo及三个真实站点检查。
-
-## 已知限制与校准状态
-
-- 考虑度和重逢权重、阈值、时间窗、冷却与惩罚是 P0 固定启发式，尚未完成 5–10 人用户测试校准；它们可能产生误判或漏判。
-- P0 的 `noveltyOrDivergence` 是有名但固定为 0 的可解释项；没有大模型、Embedding 或隐藏回退。
-- 关键词 Jaccard 相似度只能覆盖简单文本重合，不代表语义理解。
-- 真实站点选择器依赖 Bilibili/知乎/抖音当前 DOM，页面更新可能中断采集；三个站点都必须在加载 unpacked extension 的 Chrome 中人工验收。
-- 本地 Demo 是确定性演示路径，不等价于真实站点性能或长期用户效果。
-- Side Panel 中重逢卡片展示会写入 24 小时冷却；删除一条 Missed Path 后，当前情境的重逢列表也会重新计算。
-
-## 第三方与 AI 辅助声明
+## 声明
 
 - 运行时代码没有第三方 npm 库、远程脚本、外部 API、后端或遥测服务。
-- Bilibili、知乎与抖音是当前受支持的真实搜索页面环境；扩展不调用平台 API，也不上传采集数据。
-- 开发过程中使用了 OpenAI Codex 辅助部分代码、测试和文档生成/审查；若团队还使用了其他 AI 工具，应在最终提交清单中按实际情况补充。团队仍对提交内容、测试结果和演示表述负责，扩展运行时不调用 AI。
-- 发布压缩包、Git tag、提交和推送必须由团队确认后执行；本步骤只冻结源码、文档和校验入口。
+- Bilibili、知乎和抖音是当前接入的真实搜索页面环境；扩展不调用平台 API，也不上传采集数据。
+- 开发过程中使用了 OpenAI Codex 辅助部分代码、测试和文档生成/审查。团队仍对提交内容、测试结果和演示表述负责，扩展运行时不调用 AI。
